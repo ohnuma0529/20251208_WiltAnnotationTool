@@ -14,14 +14,26 @@ class ModelLoader:
                 cls._instance.sam2_predictor = None # Video
                 cls._instance.sam2_image_predictor = None # Image (for single frame prompts)
                 cls._instance.cotracker_predictor = None
-                cls._instance.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+                
+                # Device Detection
+                device_count = torch.cuda.device_count()
+                if device_count >= 2:
+                    print("Dual GPU Mode Detected: Splitting models.")
+                    cls._instance.sam2_device = 'cuda:0'
+                    cls._instance.cotracker_device = 'cuda:1'
+                    cls._instance.device = 'cuda:0' # Default fallback
+                else:
+                    cls._instance.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+                    cls._instance.sam2_device = cls._instance.device
+                    cls._instance.cotracker_device = cls._instance.device
+
         return cls._instance
 
     def load_models(self):
         if self.sam2_predictor is not None and self.cotracker_predictor is not None:
             return
 
-        print(f"Loading models to {self.device}...")
+        print(f"Loading models... (SAM2: {self.sam2_device}, CoTracker: {self.cotracker_device})")
         
         # Load Sam 2
         try:
@@ -32,10 +44,10 @@ class ModelLoader:
             model_cfg = "sam2_hiera_l.yaml"
             
             if os.path.exists(sam2_checkpoint):
-                 self.sam2_predictor = build_sam2_video_predictor(model_cfg, sam2_checkpoint, device=self.device)
+                 self.sam2_predictor = build_sam2_video_predictor(model_cfg, sam2_checkpoint, device=self.sam2_device)
                  
                  # Image Predictor needs a built model
-                 base_model = build_sam2(model_cfg, sam2_checkpoint, device=self.device)
+                 base_model = build_sam2(model_cfg, sam2_checkpoint, device=self.sam2_device)
                  self.sam2_image_predictor = SAM2ImagePredictor(base_model)
                  
                  print("SAM 2 (Video & Image) loaded.")
@@ -46,7 +58,6 @@ class ModelLoader:
             print(f"Could not import SAM 2: {e}")
 
         # Load CoTracker3
-        # Load CoTracker3
         try:
             print("Loading CoTracker3 Offline from torch.hub...")
             # Use torch.hub to load the official offline model (best quality)
@@ -55,7 +66,7 @@ class ModelLoader:
                 "facebookresearch/co-tracker", 
                 "cotracker3_offline",
                 trust_repo=True
-            ).to(self.device).eval()
+            ).to(self.cotracker_device).eval()
             print("CoTracker3 Offline loaded via torch.hub.")
             
         except Exception as e:
@@ -64,7 +75,5 @@ class ModelLoader:
                  
         except ImportError as e:
             print(f"Could not import CoTracker: {e}")
-        except Exception as e:
-            print(f"CoTracker Loading Error: {e}")
 
 model_loader = ModelLoader()

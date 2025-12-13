@@ -222,7 +222,7 @@ class TrackingEngine:
                  point_metadata.append({'leaf_id': leaf.id, 'type': 'support', 'obj': p})
                  
         if not track_points: return {}
-        queries = torch.tensor([track_points], device=model_loader.device).float()
+        queries = torch.tensor([track_points], device=model_loader.cotracker_device).float()
         
         # Process in Chunks (CoTracker Limit typically ~200-300 frames safely?)
         # For bidirectional segment, segment might be small. 
@@ -265,7 +265,7 @@ class TrackingEngine:
                 padded = cv2.copyMakeBorder(resized, pad_y, pad_y_b, pad_x, pad_x_r, cv2.BORDER_CONSTANT, value=(0,0,0))
                 video_tensor_list.append(torch.from_numpy(padded).permute(2, 0, 1))
 
-            video = torch.stack(video_tensor_list).unsqueeze(0).float().to(model_loader.device)
+            video = torch.stack(video_tensor_list).unsqueeze(0).float().to(model_loader.cotracker_device)
             
             # Inference
             # Queries must be updated if this is not the first chunk
@@ -283,7 +283,7 @@ class TrackingEngine:
                          track_points.append([0.0, tx, ty])
                          point_metadata.append({'leaf_id': leaf.id, 'type': 'support', 'obj': p})
                  if track_points:
-                     queries = torch.tensor([track_points], device=model_loader.device).float()
+                     queries = torch.tensor([track_points], device=model_loader.cotracker_device).float()
                  else:
                      break
 
@@ -371,21 +371,6 @@ class TrackingEngine:
             # 1. Prepare Keyframes
             # Ensure start_frame is in keyframes
             prompts = keyframes.copy() if keyframes else {}
-
-            # V45: Neighbor Keyframe Suppression
-            # Remove any OTHER keyframes that are immediate neighbors (+/- 1) of the trigger frame.
-            # This allows re-interpolation of "glitched" neighbors like Frame 27 when editing 26 or 28.
-            suppression_radius = 1
-            keys_to_suppress = []
-            for k in prompts.keys():
-                if k != start_frame_idx:
-                    if abs(k - start_frame_idx) <= suppression_radius:
-                        keys_to_suppress.append(k)
-            
-            for k in keys_to_suppress:
-                print(f"DEBUG: Suppressing Neighbor Keyframe {k} (Trigger: {start_frame_idx})")
-                del prompts[k]
-
             prompts[start_frame_idx] = initial_leaves
             
             # Sort Keyframe Indices
