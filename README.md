@@ -1,46 +1,58 @@
 # WiltAnnotationTool
 
-Video Annotation Tool powered by SAM 2 and CoTracker.
+SAM 2 と CoTracker を活用したビデオアノテーションツールです。
 
-## Features
-- **Semi-Automatic Annotation**: Uses SAM 2 for mask generation and CoTracker for tracking points over time.
-- **Multi-GPU Support**: Automatically detects multiple GPUs (e.g., Dual RTX A6000) and splits models for efficiency (SAM 2 on GPU 0, CoTracker on GPU 1). Default to Single GPU (RTX 3090) otherwise.
+## 特徴
+- **半自動アノテーション**: SAM 2 を使用してマスクを生成し、CoTracker でポイントを時間方向に追跡します。
+- **マルチGPUサポート**: 複数のGPU（例: RTX A6000 x 2）を自動検出し、モデルを分散配置（SAM 2 を GPU 0、CoTracker を GPU 1）して効率化します。単一GPU（RTX 3090等）の場合は自動的にデフォルト設定で動作します。
 
-## Setup
+## 環境構築 (Setup)
 
-### Prerequisites
+### 前提条件
 - Linux
-- NVIDIA Driver (CUDA 12.1+ recommended)
+- NVIDIA Driver (CUDA 12.1+ 推奨)
 - Conda (Anaconda/Miniconda)
 
-### Automatic Setup
-Run the setup script to create the environment, install dependencies, and download checkpoints.
+### 自動セットアップ
+以下のスクリプトを実行すると、Conda環境の作成、依存ライブラリのインストール、チェックポイントのダウンロードまでを自動で行います。
 
 ```bash
 bash setup_env.sh
 ```
 
-This will:
-1. Create a Conda environment `WiltAnnotation`.
-2. Install PyTorch and dependencies.
-3. Clone SAM 2 and CoTracker repositories.
-4. Download the necessary SAM 2 checkpoint.
+このスクリプトは以下を実行します:
+1. Conda環境 `WiltAnnotation` の作成
+2. PyTorch (CUDA対応) および依存ライブラリのインストール
+3. SAM 2 および CoTracker リポジトリのクローン
+4. SAM 2 用チェックポイント (`sam2_hiera_large.pt`) のダウンロード
 
-### Manual Activation
-After setup, activate the environment:
+### 環境の有効化
+セットアップ完了後、以下のコマンドで環境を有効化してください。
 
 ```bash
 conda activate WiltAnnotation
 ```
 
-## Running the Application
+## アプリケーションの実行
 
-### Start Backend
+### Backend (サーバー) の起動
 ```bash
 ./start_backend.sh
 ```
 
-### Start Frontend
+### Frontend (UI) の起動
 ```bash
 ./start_frontend.sh
 ```
+
+## アノテーションの流れ (Annotation Workflow)
+
+1. **画像の読み込み**: ツールを起動し、対象の画像フォルダを読み込みます。
+2. **バウンディングボックスの作成**: キーフレーム（開始フレーム）にて、追跡したい対象（葉など）をバウンディングボックスで囲みます。
+3. **セグメンテーション (SAM 2)**: ボックスから自動的にマスクが生成されます。必要に応じてクリックで調整します。
+4. **追跡 (CoTracker)**: 「Tracking」ボタンを押すと、生成されたマスク上のポイントが全フレームにわたって追跡されます。
+5. **修正と補間**:
+    - 追跡が外れたフレームで修正を行い、再度キーフレームとして追加します。
+    - 複数のキーフレーム間の結果は自動的にブレンド・補間されます。
+6. **保存**: 結果を保存します。
+
