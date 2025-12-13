@@ -1,0 +1,5 @@
+Requirement already satisfied: hydra-core in /home/happyai2023/anaconda3/envs/WiltAnnotation/lib/python3.10/site-packages (1.3.2)
+Requirement already satisfied: omegaconf<2.4,>=2.2 in /home/happyai2023/anaconda3/envs/WiltAnnotation/lib/python3.10/site-packages (from hydra-core) (2.3.0)
+Requirement already satisfied: antlr4-python3-runtime==4.9.* in /home/happyai2023/anaconda3/envs/WiltAnnotation/lib/python3.10/site-packages (from hydra-core) (4.9.3)
+Requirement already satisfied: packaging in /home/happyai2023/.local/lib/python3.10/site-packages (from hydra-core) (24.2)
+Requirement already satisfied: PyYAML>=5.1.0 in /home/happyai2023/.local/lib/python3.10/site-packages (from omegaconf<2.4,>=2.2->hydra-core) (6.0.2)

@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+fast_cache/
+debug_tracking_output.mp4
+.gemini/
+.env
+venv/
+node_modules/
+.DS_Store
+checkpoints/
