@@ -264,10 +264,20 @@ def preview_points(req: PreviewPointsRequest):
             max_x = min(img_w, max(xs) + pad)
             max_y = min(img_h, max(ys) + pad)
             
-            new_bbox = BBox(x_min=float(min_x), y_min=float(min_y), x_max=float(max_x), y_max=float(max_y))
+            # Update BBox
+            req.bbox.x_min = float(min_x)
+            req.bbox.y_min = float(min_y)
+            req.bbox.x_max = float(max_x)
+            req.bbox.y_max = float(max_y)
 
-        return {"points": support_points, "polygon": polygon, "new_bbox": new_bbox}
+        return {
+            "points": support_points,
+            "polygon": polygon,
+            "new_bbox": req.bbox
+        }
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/export_yolo")
