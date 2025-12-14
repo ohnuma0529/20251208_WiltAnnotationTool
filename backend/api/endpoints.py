@@ -106,7 +106,7 @@ def get_images():
         # Use relative path or just filename as ID?
         # Frontend needs a way to request image.
         # Let's send relative path from image_dir
-        relative_path = os.path.relpath(path, image_loader.image_dir)
+        relative_path = os.path.relpath(path, settings.CACHE_DIR)
         ts_pretty = f"{i//60:02d}:{i%60:02d}" # Dummy timestamp logic or parse filename
         
         # Attempt to parse timestamp from filename properly?
