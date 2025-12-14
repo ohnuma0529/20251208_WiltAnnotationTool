@@ -182,30 +182,26 @@ def run_tracking_background(req: InitTrackingRequest):
             if d_idx < len(full_image_list):
                 path = full_image_list[d_idx]
                 fname = os.path.basename(path)
-                # res is List[LeafAnnotation]. We need valid dict structure for JSON.
-                # Matching Persistence schema: { "leaves": [...], "timestamp": ... }
-                # We only have leaves here.
+                # res is TrackingResult. Extract leaves.
                 filename_data[fname] = {
-                    "leaves": [l.model_dump() for l in res] 
+                    "leaves": [l.model_dump() for l in res.leaves] 
                 }
         
         # Save directly to file
-        # We can reuse persistence logic by bypassing the "Index -> Filename" step.
         state_file = persistence.get_state_file(current_unit, current_date)
         with open(state_file, 'w') as f:
             json.dump(filename_data, f, indent=2)
         print(f"Auto-saved DENSE state to {state_file}")
 
         # 5. Update In-Memory View (Sparse)
-        # We need to map Dense Results back to Current View Indices.
         tracking_results.clear()
         
         for view_idx, fname in view_idx_to_fname.items():
             if fname in fname_to_dense_idx:
                 d_idx = fname_to_dense_idx[fname]
                 if d_idx in results_dense:
-                    # Wrap List[LeafAnnotation] in TrackingResult
-                    tracking_results[view_idx] = TrackingResult(leaves=results_dense[d_idx])
+                    # res is already TrackingResult
+                    tracking_results[view_idx] = results_dense[d_idx]
 
         # Finalize Status
         tracking_engine.status = "idle"
