@@ -456,7 +456,7 @@ class TrackingEngine:
         out.release()
         print(f"DEBUG: Visualization saved to {os.path.abspath(filename)}")
 
-    def execute_tracking(self, start_frame_idx: int, initial_leaves: List[LeafAnnotation], keyframes: Dict[int, List[LeafAnnotation]] = None, image_paths: List[str] = None) -> Dict[int, TrackingResult]:
+    def execute_tracking(self, start_frame_idx: int, initial_leaves: List[LeafAnnotation], keyframes: Dict[int, List[LeafAnnotation]] = None, image_paths: List[str] = None, step_callback: Callable[[Dict[int, TrackingResult]], None] = None) -> Dict[int, TrackingResult]:
         print(f"DEBUG: execute_tracking (V44 Dynamic Propagation) called from {start_frame_idx}")
         print(f"DEBUG: execute_tracking args: image_paths len={len(image_paths) if image_paths else 'None'}")
         self.status = "running"
@@ -520,6 +520,9 @@ class TrackingEngine:
                 for f, leaves in res_head.items():
                     if f < k0:
                         merge_into_global(f, leaves)
+                
+                # Checkpoint
+                if step_callback: step_callback(all_results)
 
             # 3. Middle Segments (Ki <-> Ki+1)
             for i in range(len(sorted_keys) - 1):
@@ -548,74 +551,66 @@ class TrackingEngine:
                 # End Prompt is strictly manual (Target Anchor) ... NO!
                 # If we want Backward Tracking to also respect propagated leaves?
                 # No, Backward Tracking from k_end relies on k_end's state.
-                # If Leaf X is missing at k_end (user didn't annotate), we can't track it backward from there.
-                # Leaf X is being tracked FORWARD from k_start.
-                # So in Blending:
-                # Leaf X exists in Fwd Result, but NOT in Bwd Result.
-                # Our blending logic (Case 2) handles "Only Fwd" -> Keep it.
-                # So the issue is: Does `res_fwd` actually contain Leaf X?
-                # Yes, if we pass the propagated list to `run_cotracker`.
+                # But k_end state IS prompts[k_end] initially.
+                # After we reach k_end from forward, it might be updated.
+                # But here we haven't reached it yet.
                 
-                # Forward Tracking Target (Source)
-                leaves_for_fwd = start_leaves
+                end_leaves = prompts[k_end] # Target (Manual Ground Truth)
+
+                segment_frames = all_frames[k_start : k_end+1]
                 
-                # Backward Tracking Target (Source)
-                # Logic: We track BACKWARD from k_end.
-                # If Leaf X is missing in k_end, we don't track it backward.
-                # That is correct behavior (it might have disappeared).
-                # BUT, if it shouldn't have disappeared, user should have annotated it at k_end?
-                # The user says "Leaf 1 annotated at Frame 0, NOT at Frame N".
-                # "Frame N has Leaf 0".
-                # User expects Leaf 1 to appear at N and continue.
-                # So Forward Tracking from 0 -> N works.
-                # Backward Tracking from N -> 0: Leaf 1 is missing, so it returns nothing for Leaf 1.
-                # Blend: Leaf 1 Fwd exists, Bwd missing -> "Only Fwd" case -> Result: Leaf 1 exists.
-                # So Segment 0->N generates Leaf 1 at Frame N.
-                # The result is stored in all_results[N].
-                #
-                # NEXT SEGMENT (N -> End):
-                # We start Forward from N.
-                # If we only use prompts[N] (Manual Leaf 0), Leaf 1 is dropped.
-                # We MUST use the result we just generated (Leaf 0 + Leaf 1) as the source for N->End.
+                # Bi-Directional Tracking (V43)
+                # 1. Forward (Src -> Tgt)
+                print(f"DEBUG: Segment {i} Forward...")
+                res_fwd = self._run_cotracker(segment_frames, start_leaves, k_start, is_reversed=False)
                 
-                # Fwd: k_start -> k_end
-                frames_fwd = all_frames[k_start : k_end + 1]
-                res_fwd = self._run_cotracker(frames_fwd, leaves_for_fwd, k_start, is_reversed=False)
+                # 2. Backward (Tgt -> Src)
+                # Reverse frames
+                print(f"DEBUG: Segment {i} Backward...")
+                frames_rev = segment_frames[::-1]
                 
-                # Bwd: k_end -> k_start
-                # Optimize: Limit backward tracking to max 60 frames
-                start_limit = max(k_start, k_end - 60)
-                frames_bwd = all_frames[start_limit : k_end + 1][::-1] 
-                res_bwd = self._run_cotracker(frames_bwd, prompts[k_end], k_end, is_reversed=True)
+                # Ensure we track slightly past the start to facilitate overlap? No, exact segment is fine.
+                res_bwd = self._run_cotracker(frames_rev, end_leaves, k_end, is_reversed=True)
                 
-                # Blend
+                # 3. Merge & Blend
+                print(f"DEBUG: Segment {i} Merging...")
+                # Iterate over relative segment indices
                 for t in range(k_start, k_end + 1):
+                    # Normalized time 0..1
                     alpha = (t - k_start) / (k_end - k_start)
-                    leaves_fwd = {l.id: l for l in res_fwd.get(t, [])}
-                    leaves_bwd = {l.id: l for l in res_bwd.get(t, [])}
                     
-                    if alpha > 0.8 and not leaves_bwd:
-                         print(f"WARNING: Frame {t} (Alpha={alpha:.2f}) has NO Backward Tracking results! This will cause a jump.")
+                    lf_list = res_fwd.get(t, [])
+                    lb_list = res_bwd.get(t, [])
                     
-                    all_ids = set(leaves_fwd.keys()) | set(leaves_bwd.keys())
+                    # Map by Leaf ID
+                    map_f = {l.id: l for l in lf_list}
+                    map_b = {l.id: l for l in lb_list}
+                    all_ids = set(map_f.keys()) | set(map_b.keys())
+                    
                     blended_leaves = []
-                    
                     for lid in all_ids:
-                        lf = leaves_fwd.get(lid)
-                        lb = leaves_bwd.get(lid)
+                        lf = map_f.get(lid)
+                        lb = map_b.get(lid)
                         
-                        if lf and lb: # Blend
-                            # ... (Same blend logic)
-                            pmap_f = {p.id: p for p in lf.points}
-                            pmap_b = {p.id: p for p in lb.points}
-                            final_points = []
-                            final_support = []
-                            
+                        if lf and lb:
+                            # BLEND
                             # Main Points
-                            main_ids = set(pmap_f.keys()) | set(pmap_b.keys())
-                            for pid in main_ids:
-                                pf = pmap_f.get(pid)
-                                pb = pmap_b.get(pid)
+                            final_points = []
+                            count_f = len(lf.points)
+                            count_b = len(lb.points)
+                            
+                            # Naive matching by ID or index? Points usually have IDs (0=Base, 1=Tip)
+                            # Or just index if consistent. CoTracker preserves IDs?
+                            # Our Point class has ID.
+                            
+                            p_map_f = {p.id: p for p in lf.points}
+                            p_map_b = {p.id: p for p in lb.points}
+                            p_ids = set(p_map_f.keys()) | set(p_map_b.keys())
+                            
+                            for pid in p_ids:
+                                pf = p_map_f.get(pid)
+                                pb = p_map_b.get(pid)
+                                
                                 if pf and pb:
                                     nx = pf.x * (1 - alpha) + pb.x * alpha
                                     ny = pf.y * (1 - alpha) + pb.y * alpha
@@ -633,6 +628,7 @@ class TrackingEngine:
                                 final_mask = lf.mask_polygon if alpha < 0.5 else lb.mask_polygon
                             else:
                                 max_idx = max(count_f, count_b)
+                                final_support = []
                                 for idx in range(max_idx):
                                     sp_f = lf.support_points[idx] if idx < count_f else None
                                     sp_b = lb.support_points[idx] if idx < count_b else None
@@ -650,7 +646,21 @@ class TrackingEngine:
                             bbox = None
                             if all_p:
                                 xs, ys = [p.x for p in all_p], [p.y for p in all_p]
-                                bbox = BBox(x_min=min(xs), y_min=min(ys), x_max=max(xs), y_max=max(ys))
+                                
+                                # Add Padding (V5)
+                                pad = 10
+                                min_x = max(0, min(xs) - pad)
+                                min_y = max(0, min(ys) - pad)
+                                # For execute_tracking, we passed image_paths, but do we have img dims locally?
+                                # We can't easily get it here without opening image.
+                                # Safe upper bound? Or just rely on tracking engine knowing it from _run_cotracker?
+                                # _run_cotracker uses orig_img.
+                                # We'll just clip min to 0. Upper bound left as max(xs)+10.
+                                # Correctness relies on downstream or previous logic.
+                                max_x = max(xs) + pad
+                                max_y = max(ys) + pad
+                                
+                                bbox = BBox(x_min=float(min_x), y_min=float(min_y), x_max=float(max_x), y_max=float(max_y))
                                 
                             blended_leaves.append(LeafAnnotation(
                                 id=lid, bbox=bbox, points=final_points, 
@@ -661,6 +671,10 @@ class TrackingEngine:
                         elif lb: blended_leaves.append(lb)
 
                     merge_into_global(t, blended_leaves)
+                
+                # Checkpoint
+                if step_callback: step_callback(all_results)
+                
                 self.progress = (i + 1) / len(sorted_keys) * 100
 
             # 4. Tail Segment (Last Keyframe -> End)

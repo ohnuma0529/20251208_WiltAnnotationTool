@@ -29,10 +29,12 @@ def delete_leaf(req: DeleteLeafRequest):
     """
     try:
         # Ensure latest state is loaded if empty (e.g. backend restarted)
-        if not tracking_results:
-             loaded = persistence.load_state(image_loader.current_unit, image_loader.current_date)
-             tracking_results.update(loaded)
-
+        # Load latest state to ensure sync
+        tracking_results = persistence.load_state(image_loader.current_unit, image_loader.current_date)
+        
+        # Determine range
+        total_frames = image_loader.get_total_frames()
+        
         if req.delete_global and req.delete_all:
              # Explicit robust handling for Global Delete All
              tracking_results.clear()
@@ -45,7 +47,8 @@ def delete_leaf(req: DeleteLeafRequest):
 
         updated_count = 0
         if req.delete_global:
-            # Global: All frames (Specific leaf deletion)
+            # Delete from ALL frames (0 to End)
+            # This is "Delete from DB" effectively for this leaf.
             frames_to_update = list(tracking_results.keys())
         else:
             # Forward: From current frame onwards
@@ -99,14 +102,26 @@ def get_images():
     for i in range(total):
         path = image_loader.get_image_path(i)
         if not path: continue
-        basename = os.path.basename(path)
-        relative_path = os.path.relpath(path, settings.CACHE_DIR)
         
-        # Parse timestamp from filename again or cache it
-        # Assuming format ...-HHMM.jpg
-        ts = basename.replace(".jpg", "").split("-")[-1] 
-        # Format TS as HH:MM
-        ts_pretty = f"{ts[:2]}:{ts[2:]}"
+        # Use relative path or just filename as ID?
+        # Frontend needs a way to request image.
+        # Let's send relative path from image_dir
+        relative_path = os.path.relpath(path, image_loader.image_dir)
+        ts_pretty = f"{i//60:02d}:{i%60:02d}" # Dummy timestamp logic or parse filename
+        
+        # Attempt to parse timestamp from filename properly?
+        # Filename: Unit_Cam_Type_YYYYMMDD-HHMM.jpg
+        try:
+             # Basic parse: Last chunk after '-'
+             base = os.path.splitext(os.path.basename(path))[0]
+             parts = base.split('-')
+             if len(parts) >= 2:
+                 time_part = parts[-1]
+                 if len(time_part) == 4:
+                     ts_pretty = f"{time_part[:2]}:{time_part[2:]}"
+        except:
+             pass
+             
         images.append(FrameData(filename=relative_path, frame_index=i, timestamp=ts_pretty))
     return images
 
@@ -117,6 +132,8 @@ def run_tracking_background(req: InitTrackingRequest):
         # 1. Get Dense Image List (Freq 1)
         current_unit = image_loader.current_unit
         current_date = image_loader.current_date
+        
+        backup_state(current_unit, current_date)
         
         full_image_list = image_loader.get_all_files(current_unit, current_date)
         
@@ -152,6 +169,28 @@ def run_tracking_background(req: InitTrackingRequest):
         
         print(f"DEBUG: Found {len(dense_keyframes)} existing keyframes mapped for dense tracking.")
 
+        # CALLBACK for Incremental Saving
+        def on_step_save(partial_results: Dict[int, TrackingResult]):
+            # Reuse saving logic
+            # This is effectively the same as final save logic but called incrementally.
+            # Warning: Overwrites file.
+            filename_data = {}
+            for d_idx, res in partial_results.items():
+                if d_idx < len(full_image_list):
+                    path = full_image_list[d_idx]
+                    fname = os.path.basename(path)
+                    filename_data[fname] = {
+                        "leaves": [l.model_dump() for l in res.leaves] 
+                    }
+            
+            state_file = persistence.get_state_file(current_unit, current_date)
+            try:
+                with open(state_file, 'w') as f:
+                    json.dump(filename_data, f, indent=2)
+                print(f"Incremental Save: Preserved {len(filename_data)} frames.")
+            except Exception as e:
+                print(f"Incremental Save Failed: {e}")
+
         # 3. Run Tracking on Full List
         # Note: returns results keyed by Dense Index
         print(f"DEBUG: Calling execute_tracking with {len(full_image_list)} images (Dense)")
@@ -159,7 +198,8 @@ def run_tracking_background(req: InitTrackingRequest):
             dense_start_idx, 
             req.leaves, 
             keyframes=dense_keyframes, 
-            image_paths=full_image_list
+            image_paths=full_image_list,
+            step_callback=on_step_save
         )
         
         # 4. Save Results (Using Filenames for Persistence)
