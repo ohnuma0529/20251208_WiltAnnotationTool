@@ -1,21 +1,22 @@
 import React from 'react';
 import { Leaf } from '../hooks/useAnnotation';
 
-interface ControlsProps {
+export interface ControlsProps {
+    opacity: number;
+    setOpacity: (val: number) => void;
     onTrack: () => void;
-    onExport: () => void;
+    onExportYolo: () => void;
     onExportCSV: () => void;
-    // V6 Props
-    isAnnotationMode: boolean;
-    setAnnotationMode: (mode: boolean) => void;
 
     trackingStarted: boolean;
     loading: boolean;
     leaves: Leaf[];
-    onDeleteLeaf: (id: number, deleteAll: boolean) => void;
-    // New props
+    onDeleteLeaf: (id: number) => void;
+    onDeleteAllLeaves: () => void;
+    onDeleteFutureFrames: () => void;    // New props
     dates: string[];
     selectedDate: string;
+
     changeDate: (d: string) => void;
     frequency: number;
     changeFrequency: (f: number) => void;
@@ -23,188 +24,188 @@ interface ControlsProps {
     units: string[];
     selectedUnit: string;
     changeUnit: (u: string) => void;
-    // Visibility
-    visibility: { bbox: boolean; keypoints: boolean; supportPoints: boolean; mask: boolean; };
-    opacity: { bbox: number; keypoints: number; supportPoints: number; mask: number; };
-    setVisibility: (v: { bbox: boolean; keypoints: boolean; supportPoints: boolean; mask: boolean; }) => void;
-    setOpacity: (o: { bbox: number; keypoints: number; supportPoints: number; mask: number; }) => void;
 
-    // V11
-    truncateFrames: () => void;
+    // Info Props
+    currentFilename: string;
+    currentTime: string;
 }
 
 export const Controls: React.FC<ControlsProps> = ({
-    onTrack, onExport, onExportCSV, isAnnotationMode, setAnnotationMode, trackingStarted, loading, leaves, onDeleteLeaf,
+    onTrack, onExportYolo, onExportCSV, trackingStarted, loading, leaves, onDeleteLeaf, onDeleteAllLeaves,
     dates, selectedDate, changeDate, frequency, changeFrequency, progress,
     units, selectedUnit, changeUnit,
-    visibility, opacity, setVisibility, setOpacity,
-    truncateFrames
+    opacity, setOpacity, onDeleteFutureFrames,
+    currentFilename, currentTime
 }) => {
+
+    // Calculate stats for Info section
+    const leafCount = leaves.length;
+    const supportPointCount = leaves.reduce((acc, l) => acc + (l.supportPoints?.length || 0), 0);
+
     return (
-        <div className="w-64 bg-gray-200 p-2 flex flex-col h-full text-xs">
-            <h1 className="text-base font-bold mb-2 text-gray-700">Setting</h1>
+        <div className="flex flex-col gap-4 p-4 bg-gray-800 text-white rounded-lg h-full">
 
-            {/* Display Settings */}
-            {/* Display Settings */}
-            <div className="bg-white p-2 rounded shadow mb-2">
-                <h3 className="font-semibold text-xs mb-1 text-gray-600">Display Settings</h3>
-                {[
-                    { key: 'bbox', label: 'BBox' },
-                    { key: 'keypoints', label: 'Keypoints' },
-                    { key: 'supportPoints', label: 'Support Pts' }
-                ].map(({ key, label }) => (
-                    <div key={key} className="flex items-center justify-between mb-2 text-sm">
-                        <label className="flex items-center cursor-pointer select-none text-gray-700">
-                            <input
-                                type="checkbox"
-                                checked={(visibility as any)[key]}
-                                onChange={e => setVisibility({ ...visibility, [key]: e.target.checked })}
-                                className="mr-2 h-4 w-4 text-blue-600 rounded focus:ring-blue-500"
-                            />
-                            {label}
-                        </label>
-                        <input
-                            type="range" min="0" max="1" step="0.1"
-                            value={(opacity as any)[key]}
-                            onChange={e => setOpacity({ ...opacity, [key]: parseFloat(e.target.value) })}
-                            className="w-16 h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer"
-                        />
+            {/* Info Section (Moved to Top & Merged) */}
+            <div className="bg-gray-700 p-3 rounded-lg space-y-2">
+                <h2 className="text-lg font-bold text-blue-400">Info</h2>
+
+                <div className="text-sm space-y-1 border-b border-gray-600 pb-2">
+                    <div className="flex justify-between">
+                        <span className="text-gray-400">File:</span>
+                        <span className="font-bold truncate ml-2" title={currentFilename}>{currentFilename}</span>
                     </div>
-                ))}
-            </div>
+                    <div className="flex justify-between">
+                        <span className="text-gray-400">Time:</span>
+                        <span className="font-bold">{currentTime}</span>
+                    </div>
+                </div>
 
-            {/* Filter Section */}
-            {/* Filter Section */}
-            <h2 className="text-sm font-bold mb-1 text-gray-700">Data Selection</h2>
-            <div className="flex flex-col gap-2 mb-4">
-                <div>
-                    <label className="block text-sm text-gray-500">Unit</label>
-                    <select
-                        value={selectedUnit}
-                        onChange={(e) => changeUnit(e.target.value)}
-                        className="w-full bg-white p-2 rounded text-gray-800 border"
-                    >
-                        {units.map(u => <option key={u} value={u}>{u}</option>)}
-                    </select>
-                </div>
-                <div>
-                    <label className="block text-sm text-gray-500">Date</label>
-                    <select
-                        value={selectedDate}
-                        onChange={(e) => changeDate(e.target.value)}
-                        className="w-full bg-white p-2 rounded text-gray-800 border"
-                    >
-                        {dates.map(d => <option key={d} value={d}>{d}</option>)}
-                    </select>
-                </div>
-                <div>
-                    <label className="block text-sm text-gray-500">Display Freq (min)</label>
-                    <select
-                        value={frequency}
-                        onChange={(e) => changeFrequency(parseInt(e.target.value))}
-                        className="w-full bg-white p-2 rounded text-gray-800 border"
-                    >
-                        {[1, 5, 10, 30].map(f => <option key={f} value={f}>{f}m</option>)}
-                    </select>
+                <div className="text-sm space-y-1">
+                    <div className="flex justify-between">
+                        <span className="text-gray-400">Leaves:</span>
+                        <span className="font-bold">{leafCount}</span>
+                    </div>
+                    <div className="flex justify-between">
+                        <span className="text-gray-400">Support Pts:</span>
+                        <span className="font-bold">{supportPointCount}</span>
+                    </div>
                 </div>
             </div>
 
-            <div className="border-t border-gray-400 my-2"></div>
+            <div className="border-t border-gray-600 my-1"></div>
 
-            <h2 className="text-sm font-bold mb-1 text-gray-700">Annotation</h2>
-
-            <div className="flex items-center gap-2 mb-2">
-                <button
-                    onClick={() => setAnnotationMode(!isAnnotationMode)}
-                    className={`w-full p-2 rounded font-bold text-white shadow ${isAnnotationMode ? 'bg-yellow-600 hover:bg-yellow-500' : 'bg-gray-600 hover:bg-gray-500'}`}
-                >
-                    {isAnnotationMode ? 'Mode: ON' : 'Mode: OFF'}
-                </button>
+            {/* Opacity Slider */}
+            <div className="flex flex-col gap-1">
+                <label className="text-xs text-gray-400 flex justify-between">
+                    Opacity <span>{Math.round(opacity * 100)}%</span>
+                </label>
+                <input
+                    type="range"
+                    min="0.1"
+                    max="1.0"
+                    step="0.05"
+                    value={opacity}
+                    onChange={(e) => setOpacity(parseFloat(e.target.value))}
+                    className="w-full h-2 bg-gray-600 rounded-lg appearance-none cursor-pointer"
+                />
             </div>
-            <p className="text-xs text-gray-500 mb-2">
-                {isAnnotationMode
-                    ? "Drag Base/Tip to correct. Draw BBox for new leaves."
-                    : "View only."}
-            </p>
 
-            <div className="border-t border-gray-400 my-2"></div>
+            {/* Data Selection */}
+            <div>
+                <h2 className="text-xl font-bold mb-2">Data Selection</h2>
+                <div className="flex flex-col gap-2">
+                    <div>
+                        <label className="block text-sm text-gray-400">Unit</label>
+                        <select
+                            value={selectedUnit}
+                            onChange={(e) => changeUnit(e.target.value)}
+                            className="w-full bg-gray-700 p-2 rounded text-white"
+                        >
+                            {units.map(u => <option key={u} value={u}>{u}</option>)}
+                        </select>
+                    </div>
+                    <div>
+                        <label className="block text-sm text-gray-400">Date</label>
+                        <select
+                            value={selectedDate}
+                            onChange={(e) => changeDate(e.target.value)}
+                            className="w-full bg-gray-700 p-2 rounded text-white"
+                        >
+                            {dates.map(d => <option key={d} value={d}>{d}</option>)}
+                        </select>
+                    </div>
+                    <div>
+                        <label className="block text-sm text-gray-400">Frequency (min)</label>
+                        <select
+                            value={frequency}
+                            onChange={(e) => changeFrequency(Number(e.target.value))}
+                            className="w-full bg-gray-700 p-2 rounded text-white"
+                        >
+                            <option value={1}>1 min</option>
+                            <option value={5}>5 min</option>
+                            <option value={10}>10 min</option>
+                            <option value={30}>30 min</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
 
-            <h2 className="text-sm font-bold mb-1 text-gray-700">Tracking</h2>
+            <div className="border-t border-gray-600 my-2"></div>
+
+            {/* Tracking & Export */}
+            <h2 className="text-xl font-bold">Tracking</h2>
 
             <div className="flex gap-2 flex-col">
                 <div className="flex gap-2">
                     <button
                         onClick={onTrack}
                         disabled={loading}
-                        className="flex-1 bg-blue-600 hover:bg-blue-500 disabled:bg-gray-400 text-white p-2 rounded font-bold shadow"
+                        className="flex-1 bg-blue-600 hover:bg-blue-500 disabled:bg-gray-600 p-2 rounded font-bold"
                     >
-                        {loading ? `${progress.toFixed(0)}%` : 'Track'}
+                        {loading ? `Tracking... ${progress.toFixed(0)}% ` : 'Run Tracking'}
                     </button>
+                </div>
+                <div className="flex gap-2">
                     <button
-                        onClick={onExport}
+                        onClick={onExportYolo}
                         disabled={loading}
-                        className="flex-1 bg-green-600 hover:bg-green-500 disabled:bg-gray-400 text-white p-2 rounded font-bold shadow"
+                        className="flex-1 bg-green-600 hover:bg-green-500 disabled:bg-gray-600 p-2 rounded font-bold"
                     >
-                        Export
+                        Export YOLO
                     </button>
                     <button
                         onClick={onExportCSV}
                         disabled={loading}
-                        className="flex-1 bg-teal-600 hover:bg-teal-500 disabled:bg-gray-400 text-white p-2 rounded font-bold shadow"
+                        className="flex-1 bg-teal-600 hover:bg-teal-500 disabled:bg-gray-600 p-2 rounded font-bold"
                     >
-                        CSV
+                        Export CSV
                     </button>
                 </div>
                 {loading && (
-                    <div className="w-full bg-gray-300 rounded-full h-2.5 mt-2">
-                        <div className="bg-blue-600 h-2.5 rounded-full transition-all duration-300" style={{ width: `${progress}%` }}></div>
+                    <div className="w-full bg-gray-700 rounded-full h-2.5 dark:bg-gray-700">
+                        <div className="bg-blue-600 h-2.5 rounded-full" style={{ width: `${progress}%` }}></div>
                     </div>
                 )}
             </div>
 
-            <div className="border-t border-gray-400 my-4"></div>
+            <div className="border-t border-gray-600 my-2"></div>
 
-            {/* Delete Dropdown */}
-            <div>
-                <label className="text-xs text-gray-500 block mb-1">Delete Leaf</label>
+            {/* Delete Annotation */}
+            <div className="mt-2">
+                <label className="text-xs text-gray-400 block mb-1">Delete Annotation (Global)</label>
                 <select
-                    className="w-full bg-white text-gray-800 p-2 rounded border"
+                    className="w-full bg-gray-700 text-white p-2 rounded"
                     onChange={(e) => {
                         const val = e.target.value;
                         if (val === "all") {
-                            onDeleteLeaf(0, true);
-                        }
-                        else if (val !== "") {
-                            onDeleteLeaf(parseInt(val), false);
+                            onDeleteAllLeaves();
+                        } else if (val !== "") {
+                            onDeleteLeaf(parseInt(val));
                         }
                         e.target.value = ""; // Reset
                     }}
                     defaultValue=""
                 >
                     <option value="" disabled>Select to delete...</option>
-                    <option value="all">All Leaves</option>
+                    <option value="all" className="text-red-400 font-bold">All Leaves (Global)</option>
                     {leaves.map(l => (
                         <option key={l.id} value={l.id}>Leaf {l.id}</option>
                     ))}
                 </select>
-                <p className="text-xs text-red-500 mt-1">*Deletes immediately (no confirm)</p>
+                <div className="text-xs text-gray-400 mt-1">
+                    * Deletes from ALL frames.
+                </div>
             </div>
 
-            <div className="border-t border-gray-400 my-4"></div>
-
-            <div className="bg-red-100 p-2 rounded border border-red-300">
-                <h3 className="text-red-700 font-bold text-xs mb-2">Danger Zone</h3>
+            <div className="mt-auto border-t border-gray-700 pt-4">
+                {/* Delete Future Images Button */}
                 <button
-                    onClick={() => {
-                        if (confirm("DELETE all subsequent frames (on disk/cache) starting from current? This cannot be undone.")) {
-                            truncateFrames();
-                        }
-                    }}
-                    className="w-full bg-red-600 hover:bg-red-500 text-white p-2 rounded text-xs font-bold shadow"
+                    onClick={() => onDeleteFutureFrames()}
+                    className="w-full bg-red-900 hover:bg-red-800 text-white font-bold py-2 px-4 rounded mb-4 border border-red-700 text-xs"
                 >
-                    Truncate Future Frames
+                    DELETE FUTURE IMAGES (Files)
                 </button>
             </div>
-        </div>
+        </div >
     );
 };

@@ -2,8 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import axios from 'axios';
 
 // API Base URL
-const API_BASE = '/api';
-const API_URL = API_BASE; // Alias for legacy if needed
+const API_URL = '/api';
 
 export interface Point {
     x: number;
@@ -55,29 +54,32 @@ export const useAnnotation = () => {
     const [selectedUnit, setSelectedUnit] = useState<string>('');
     const [dates, setDates] = useState<string[]>([]);
     const [selectedDate, setSelectedDate] = useState<string>('');
-    const [frequency, setFrequency] = useState<number>(10);
+    const [frequency, setFrequency] = useState<number>(30);
 
     // Multi-Leaf State
     const [leaves, setLeaves] = useState<Leaf[]>([]);
     const [tempLeaf, setTempLeaf] = useState<Partial<Leaf>>({});
     const [trackingStarted, setTrackingStarted] = useState<boolean>(false);
 
-    // Annotations Cache
-    const [annotations, setAnnotations] = useState<Record<number, any>>({});
+    // API & Loading
 
     // Load Units on mount
     useEffect(() => {
         let isMounted = true;
-        axios.get(`${API_BASE}/units`)
-            .then(res => {
-                if (!isMounted) return;
-                const availUnits = res.data.units;
-                setUnits(availUnits);
-                if (availUnits.length > 0) {
-                    setSelectedUnit(availUnits[0]);
-                }
-            })
-            .catch(err => console.error("Failed to load units", err));
+
+        const fetchUnits = () => {
+            axios.get(`${API_URL}/units`)
+                .then(res => {
+                    if (!isMounted) return;
+                    const availUnits = res.data.units;
+                    setUnits(availUnits);
+                    if (availUnits.length > 0) {
+                        setSelectedUnit(availUnits[0]);
+                    }
+                })
+                .catch(err => console.error("Failed to load units", err));
+        };
+        fetchUnits();
         return () => { isMounted = false; };
     }, []);
 
@@ -85,108 +87,70 @@ export const useAnnotation = () => {
     useEffect(() => {
         if (!selectedUnit) return;
 
-        let isActive = true;
-        axios.get(`${API_BASE}/dates?unit=${selectedUnit}`)
-            .then(res => {
-                if (!isActive) return;
-                const availableDates = res.data.dates;
-                setDates(availableDates);
-
-                // Always default to the first date when Unit changes
-                // preventing stale date issues or empty display
-                if (availableDates.length > 0) {
-                    // Check if current selectedDate is valid for this unit? 
-                    // Usually units have distinct dates, so just switch to first.
-                    // If we are strictly initializing, selectedDate might be empty.
-                    // If switching units, we overwrite it.
-                    changeDate(availableDates[0]);
-                } else {
-                    setFrames([]);
-                    setSelectedDate('');
-                }
-            })
-            .catch(err => console.error("Failed to load dates", err));
-
-        return () => { isActive = false; };
+        let isMounted = true;
+        const fetchDates = () => {
+            axios.get(`${API_URL}/dates?unit=${selectedUnit}`)
+                .then(res => {
+                    if (!isMounted) return;
+                    const availableDates = res.data.dates;
+                    setDates(availableDates);
+                    if (availableDates.length > 0) {
+                        setSelectedDate(availableDates[0]);
+                    } else {
+                        setSelectedDate('');
+                        setFrames([]);
+                    }
+                })
+                .catch(err => {
+                    if (!isMounted) return;
+                    console.error("Failed to load dates, retrying...", err);
+                    setTimeout(fetchDates, 3000);
+                });
+        };
+        fetchDates();
+        return () => { isMounted = false; };
     }, [selectedUnit]);
 
+    // Annotations Cache
+    const [annotations, setAnnotations] = useState<Record<number, any>>({});
 
-    // Fetch Annotations
+    // Load Annotations
     const fetchAnnotations = useCallback(async () => {
         try {
-            const res = await axios.get(`${API_BASE}/annotations?t=${new Date().getTime()}`);
+            const res = await axios.get(`${API_URL}/annotations?t=${new Date().getTime()}`);
             setAnnotations(res.data);
+            console.log("Fetched annotations:", Object.keys(res.data).length);
         } catch (err) {
             console.error("Failed to fetch annotations", err);
         }
     }, []);
 
-    // --- Core Data Fetching ---
+    // Fetch images when unit/date/freq changes
+    useEffect(() => {
+        if (!selectedUnit || !selectedDate) return;
 
-    const fetchFrames = async (freqOverride?: number) => {
         setLoading(true);
-        try {
-            const f = freqOverride !== undefined ? freqOverride : frequency;
-            const res = await axios.get(`${API_BASE}/images?frequency=${f}`);
-            setFrames(res.data);
-            // If current index is out of bounds, reset
-            if (currentFrameIndex >= res.data.length && res.data.length > 0) {
+        axios.post(`${API_URL}/set_filter`, { unit: selectedUnit, date: selectedDate, frequency: frequency })
+            .then(() => {
+                // After filter is set, get images
+                return axios.get(`${API_URL}/images`);
+            })
+            .then(res => {
+                setFrames(res.data);
                 setCurrentFrameIndex(0);
-            }
-            // Fetch annotations whenever frames reload (context switch)
-            await fetchAnnotations();
-        } catch (error) {
-            console.error(error);
-        } finally {
-            setLoading(false);
-        }
-    };
+                setLeaves([]);
+                setTempLeaf({});
+                setTrackingStarted(false);
+                // Important: Fetch annotations AFTER images are set to ensure sync
+                return fetchAnnotations();
+            })
+            .catch(err => console.error("Failed to load images/annotations", err))
+            .finally(() => setLoading(false));
+    }, [selectedUnit, selectedDate, frequency, fetchAnnotations]);
 
-
-    const changeUnit = (unit: string) => {
-        setSelectedUnit(unit);
-        // Date loading is handled by useEffect to ensure state consistency
-    };
-
-    const changeDate = async (date: string) => {
-        setSelectedDate(date);
-        try {
-            // First set filter in backend (ensure Dense Loading)
-            await axios.post(`${API_BASE}/set_filter`, { unit: selectedUnit, date: date, frequency: 1 });
-
-            // Then fetch frames with current sparse frequency
-            setLeaves([]);
-            setTempLeaf({});
-            setTrackingStarted(false);
-
-            await fetchFrames(frequency);
-        } catch (e) { console.error(e); }
-    };
-
-    const changeFrequency = async (f: number) => {
-        setFrequency(f);
-        // No need to reload backend images (already dense), just re-fetch sparse list
-        fetchFrames(f);
-    };
-
-    const truncateFrames = async () => {
-        if (!frames[currentFrameIndex]) return;
-        try {
-            // Use dense frame index
-            const denseIdx = frames[currentFrameIndex].frame_index;
-            const res = await axios.post(`${API_BASE}/truncate_frames`, { frame_index: denseIdx });
-            if (res.data.status === 'success') {
-                // alert(`Truncated ${res.data.deleted_frames} frames.`);
-                // Refresh
-                fetchFrames();
-            }
-        } catch (e) {
-            console.error(e);
-            alert("Failed to truncate.");
-        }
-    };
-
-    // --- Interaction ---
+    const changeUnit = (unit: string) => setSelectedUnit(unit);
+    const changeDate = (date: string) => setSelectedDate(date);
+    const changeFrequency = (freq: number) => setFrequency(freq);
 
     // Playback State
     const [isPlaying, setIsPlaying] = useState<boolean>(false);
@@ -219,11 +183,11 @@ export const useAnnotation = () => {
         return () => clearInterval(interval);
     }, [isPlaying, frames.length]);
 
-    // Preload Next Frames
+    // Preload Next Frames ... (Same)
     useEffect(() => {
         if (frames.length === 0) return;
         const PRELOAD_COUNT = 10;
-        const baseUrl = ''; // Assuming API_BASE is /api
+        const baseUrl = API_URL.replace('/api', '');
 
         for (let i = 1; i <= PRELOAD_COUNT; i++) {
             const nextIndex = currentFrameIndex + i;
@@ -236,25 +200,30 @@ export const useAnnotation = () => {
 
     // Sync current frame with annotations (Multi-Leaf)
     useEffect(() => {
-        if (frames.length === 0) return;
-        const frame = frames[currentFrameIndex];
-        // Use Dense Index to look up annotation
-        const denseIdx = frame ? frame.frame_index : -1;
-
-        const ann = annotations[denseIdx];
+        const ann = annotations[currentFrameIndex];
         if (ann && ann.leaves) {
+            // Restore leaves from backend result
+            // Note: Backend result leaves might lack 'color'. We need to re-assign or persist color.
+            // Ideally color should be deterministic based on ID.
             const restoredLeaves = ann.leaves.map((l: any) => ({
                 ...l,
                 supportPoints: l.support_points || l.supportPoints || [],
-                maskPolygon: l.mask_polygon || l.maskPolygon || [],
                 color: LEAF_COLORS[l.id % LEAF_COLORS.length]
             }));
             setLeaves(restoredLeaves);
         } else {
+            // Only clear if no annotation found?
+            // If manual drawing has not started?
             setLeaves([]);
         }
         setTempLeaf({});
-    }, [currentFrameIndex, annotations, frames]); // Added frames dep
+    }, [currentFrameIndex, annotations]);
+
+    // Initial load handled by chained effect
+    // useEffect(() => {
+    //     fetchAnnotations();
+    // }, [fetchAnnotations]);
+
 
     // Helper: Calculate IoU
     const calculateIoU = (boxA: BBox, boxB: BBox) => {
@@ -273,68 +242,75 @@ export const useAnnotation = () => {
     // Preview Support Points
     const previewPoints = async (bboxVal: BBox) => {
         // Check for overlap with existing leaves
+        // Check for overlap with existing leaves
         let overlappingLeafId: number | null = null;
         let maxIoU = 0;
 
-        leaves.forEach(l => {
-            if (l.bbox) {
-                // Aggressive Matching (V37)
-                // Calculate Intersection Area
-                const xA = Math.max(bboxVal.x_min, l.bbox.x_min);
-                const yA = Math.max(bboxVal.y_min, l.bbox.y_min);
-                const xB = Math.min(bboxVal.x_max, l.bbox.x_max);
-                const yB = Math.min(bboxVal.y_max, l.bbox.y_max);
-                const interArea = Math.max(0, xB - xA) * Math.max(0, yB - yA);
+        // Find leaves essentially "inside" the new BBox
+        // Or if the new BBox is a refinement of an existing one.
+        const enclosedLeaves = leaves.filter(l => {
+            if (!l.bbox) return false;
+            // Check if leaf center is inside new BBox or significant IoU
+            // Center Check
+            const cx = (l.bbox.x_min + l.bbox.x_max) / 2;
+            const cy = (l.bbox.y_min + l.bbox.y_max) / 2;
+            const isCenterInside = cx >= bboxVal.x_min && cx <= bboxVal.x_max &&
+                cy >= bboxVal.y_min && cy <= bboxVal.y_max;
 
-                const boxAArea = (bboxVal.x_max - bboxVal.x_min) * (bboxVal.y_max - bboxVal.y_min);
-                const boxBArea = (l.bbox.x_max - l.bbox.x_min) * (l.bbox.y_max - l.bbox.y_min);
-                const minArea = Math.min(boxAArea, boxBArea);
-                const unionArea = boxAArea + boxBArea - interArea;
-
-                const overlapRatio = minArea > 0 ? interArea / minArea : 0;
-                const iou = unionArea > 0 ? interArea / unionArea : 0;
-
-                // Combined Score: OverlapRatio (handling inclusions) + IoU (handling exact matches)
-                const score = overlapRatio + iou;
-
-                // Threshold: 0.5 (e.g., 30% overlap + 20% IoU is enough)
-                if (score > 0.5 && score > maxIoU) {
-                    maxIoU = score; // Use Score as metric
-                    overlappingLeafId = l.id;
-                }
-            }
+            // Also check IoU
+            const iou = calculateIoU(bboxVal, l.bbox);
+            return isCenterInside || iou > 0.5;
         });
 
-        const denseIdx = frames[currentFrameIndex] ? frames[currentFrameIndex].frame_index : 0;
+        if (enclosedLeaves.length === 1) {
+            // Exactly one candidate -> Update it
+            overlappingLeafId = enclosedLeaves[0].id;
+            console.log(`Single Enclosed Leaf Found: ${overlappingLeafId}. Updating...`);
+        } else {
+            // Fallback to max IoU if no clear single containment, or multiple
+            leaves.forEach(l => {
+                if (l.bbox) {
+                    const iou = calculateIoU(bboxVal, l.bbox);
+                    if (iou > 0.3 && iou > maxIoU) {
+                        maxIoU = iou;
+                        overlappingLeafId = l.id;
+                    }
+                }
+            });
+        }
 
         try {
-            const res = await axios.post(`${API_BASE}/preview_points`, {
-                frame_index: denseIdx,
+            const res = await axios.post(`${API_URL}/preview_points`, {
+                frame_index: currentFrameIndex,
                 bbox: bboxVal
             });
 
             if (overlappingLeafId !== null) {
                 // Update existing leaf
+                console.log(`Updating overlapping leaf ${overlappingLeafId} (IoU: ${maxIoU.toFixed(2)})`);
+
                 const updatedLeaves = leaves.map(l => {
                     if (l.id === overlappingLeafId) {
                         return {
                             ...l,
-                            bbox: bboxVal,
+                            bbox: res.data.new_bbox || bboxVal,
                             supportPoints: res.data.points,
                             maskPolygon: res.data.polygon
+                            // Keep existing points (Base/Tip) and color
                         };
                     }
                     return l;
                 });
-                setLeaves(updatedLeaves);
+
+                setLeaves(updatedLeaves); // Optimistic
+
                 // Persist
                 const payload = updatedLeaves.map(l => ({
                     ...l,
-                    support_points: l.supportPoints,
-                    mask_polygon: l.maskPolygon
+                    support_points: l.supportPoints
                 }));
-                await axios.post(`${API_BASE}/save_frame`, {
-                    frame_index: denseIdx,
+                await axios.post(`${API_URL}/save_frame`, {
+                    frame_index: currentFrameIndex,
                     leaves: payload
                 });
 
@@ -343,7 +319,7 @@ export const useAnnotation = () => {
                 const newId = leaves.length > 0 ? Math.max(...leaves.map(l => l.id)) + 1 : 0;
                 setTempLeaf({
                     id: newId,
-                    bbox: bboxVal,
+                    bbox: res.data.new_bbox || bboxVal,
                     points: [],
                     supportPoints: res.data.points,
                     maskPolygon: res.data.polygon,
@@ -355,23 +331,86 @@ export const useAnnotation = () => {
         }
     };
 
-    const deleteLeaf = async (leafId: number, deleteAll: boolean) => {
-        const denseIdx = frames[currentFrameIndex] ? frames[currentFrameIndex].frame_index : 0;
+    const deleteLeaf = async (leafId: number) => {
+        if (!selectedUnit || !selectedDate) return;
+
         try {
-            await axios.post(`${API_BASE}/delete_leaf`, {
-                frame_index: denseIdx,
-                leaf_id: leafId,
-                delete_all: deleteAll
+            await axios.delete(`${API_URL}/delete_leaf`, {
+                data: {
+                    unit: selectedUnit,
+                    date: selectedDate,
+                    leaf_id: leafId,
+                    delete_global: true // Always global delete
+                }
+            });
+            // Update local state by removing just that leaf to be responsive
+            setAnnotations(prev => {
+                // Deep copy isn't easy for Record, but we can just invalidate.
+                return { ...prev };
             });
             await fetchAnnotations();
+        } catch (error) {
+            console.error('Error deleting leaf:', error);
+        }
+    };
+
+    const deleteAllLeaves = async () => {
+        if (!selectedUnit || !selectedDate) return;
+
+        setLoading(true);
+        try {
+            await axios.delete(`${API_URL}/delete_leaf`, {
+                data: {
+                    unit: selectedUnit,
+                    date: selectedDate,
+                    frame_index: currentFrameIndex,
+                    delete_all: true,
+                    delete_global: true
+                }
+            });
+            setAnnotations({});
+            setLeaves([]);
+            await fetchAnnotations();
+        } catch (error) {
+            console.error('Error deleting all leaves:', error);
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const deleteFutureFrames = async () => {
+        try {
+            await axios.post(`${API_URL}/delete_frames`, {
+                frame_index: currentFrameIndex
+            });
+
+            setLoading(true);
+            // Force reload images to reflect truncation
+            const res = await axios.get(`${API_URL}/images`);
+            setFrames(res.data);
+
+            // Adjust index if necessary
+            if (currentFrameIndex > 0) {
+                setCurrentFrameIndex(currentFrameIndex - 1);
+            } else {
+                setCurrentFrameIndex(0);
+            }
+
+            // Refresh annotations
+            await fetchAnnotations();
+
+            setLoading(false);
+            // alert("Future frames deleted."); // Removed per user request
         } catch (err) {
-            console.error("Delete failed", err);
-            alert("Failed to delete leaf.");
+            console.error("Delete frames failed", err);
+            alert("Failed to delete frames.");
+            setLoading(false);
         }
     };
 
     // Correction Logic
     const updateLeafPoint = (leafId: number, pointIndex: number, newPos: { x: number, y: number }) => {
+        // Update local state without persisting yet (persisted on release or re-track)
         setLeaves(prev => prev.map(l => {
             if (l.id !== leafId) return l;
             const newPoints = [...l.points];
@@ -379,93 +418,155 @@ export const useAnnotation = () => {
                 newPoints[pointIndex] = { ...newPoints[pointIndex], ...newPos };
             }
 
-            // Recalculate BBox to ensure inclusion
-            const allPts = [...newPoints, ...(l.supportPoints || [])];
-            let newBBox = l.bbox;
-            if (allPts.length > 0) {
-                const xs = allPts.map(p => p.x);
-                const ys = allPts.map(p => p.y);
-                const minX = Math.min(...xs); const maxX = Math.max(...xs);
-                const minY = Math.min(...ys); const maxY = Math.max(...ys);
-                const padX = (maxX - minX) * 0.05;
-                const padY = (maxY - minY) * 0.05;
-
-                newBBox = {
-                    x_min: Math.max(0, minX - padX),
-                    y_min: Math.max(0, minY - padY),
-                    x_max: maxX + padX,
-                    y_max: maxY + padY
-                };
-            }
+            // Recalculate BBox (Frontend Optimistic)
+            const allPoints = [...(l.supportPoints || []), ...newPoints];
+            const allXs = allPoints.map(p => p.x);
+            const allYs = allPoints.map(p => p.y);
+            const pad = 10;
+            const newBBox = {
+                x_min: Math.max(0, Math.min(...allXs) - pad),
+                y_min: Math.max(0, Math.min(...allYs) - pad),
+                x_max: Math.max(...allXs) + pad,
+                y_max: Math.max(...allYs) + pad
+            };
 
             return {
                 ...l,
+                bbox: newBBox,
                 points: newPoints,
-                bbox: newBBox
             };
         }));
     };
 
     const saveLeafCorrection = async (leafId: number) => {
-        const denseIdx = frames[currentFrameIndex] ? frames[currentFrameIndex].frame_index : 0;
+        // Save the modified leaf logic to backend (same as new leaf save, but overwrite)
+        // Uses current leaves state
         const leaf = leaves.find(l => l.id === leafId);
         if (!leaf) return;
 
         try {
+            // We need to send ALL leaves for this frame to be safe, or just update one?
+            // save_frame updates the whole list for that frame index?
+            // backend/api/endpoints.py: save_frame -> tracking_results[idx].leaves = req.leaves
+            // So we must send ALL leaves.
             const payload = leaves.map(l => ({
                 ...l,
-                support_points: l.supportPoints,
-                mask_polygon: l.maskPolygon
+                support_points: l.supportPoints
             }));
 
-            await axios.post(`${API_BASE}/save_frame`, {
-                frame_index: denseIdx,
+            await axios.post(`${API_URL}/save_frame`, {
+                frame_index: currentFrameIndex,
                 leaves: payload
             });
             console.log(`Leaf ${leafId} correction saved.`);
+            fetchAnnotations(); // Refresh to update Timeline stars
         } catch (err) {
             console.error("Correction save failed", err);
         }
     };
 
+    const regenerateSupportPoints = async (leafId: number) => {
+        const leaf = leaves.find(l => l.id === leafId);
+        if (!leaf || !leaf.points || leaf.points.length !== 2) return;
 
+        const xs = leaf.points.map(p => p.x);
+        const ys = leaf.points.map(p => p.y);
+        const minX = Math.min(...xs); const maxX = Math.max(...xs);
+        const minY = Math.min(...ys); const maxY = Math.max(...ys);
+        const w = maxX - minX; const h = maxY - minY;
+        // Strict Tight Fit (Bitabita) - No Padding
+        const newBBox: BBox = {
+            x_min: minX,
+            y_min: minY,
+            x_max: maxX,
+            y_max: maxY
+        };
+
+        try {
+            // Call update_region endpoint (New V43 requirement)
+            // Or preview_points logic? 
+            // V43 requires update_region to regenerate points.
+            // Let's call update_region directly which saves to backend immediately.
+            const res = await axios.post(`${API_URL}/update_region`, {
+                frame_index: currentFrameIndex,
+                leaf_id: leafId,
+                bbox: newBBox
+            });
+
+            if (res.data.status === 'updated') {
+                const updatedLeaf = res.data.leaf;
+                // Update local state
+                setLeaves(prev => prev.map(l => l.id === leafId ? { ...l, ...updatedLeaf, color: l.color } : l));
+                fetchAnnotations(); // Refresh stars
+            }
+        } catch (err) {
+            console.error("Regenerate (Update Region) failed", err);
+        }
+    };
 
     const addTempPoint = (pt: Point) => {
-        if (!tempLeaf.bbox) return;
-        const denseIdx = frames[currentFrameIndex] ? frames[currentFrameIndex].frame_index : 0;
+        if (!tempLeaf.bbox) return; // Must have bbox first
 
         const currentPoints = tempLeaf.points || [];
         if (currentPoints.length < 2) {
             const newPoints = [...currentPoints, pt];
             setTempLeaf(prev => ({ ...prev, points: newPoints }));
 
+            // If 2 points, Leaf is complete. Move to main list.
             if (newPoints.length === 2) {
+
+                // Recalculate BBox to include Base/Tip (in case they are outside)
+                // We start with the SAM-tightened bbox
+                let finalLeafBBox = tempLeaf.bbox!;
+                const xs = [newPoints[0].x, newPoints[1].x, finalLeafBBox.x_min, finalLeafBBox.x_max];
+                const ys = [newPoints[0].y, newPoints[1].y, finalLeafBBox.y_min, finalLeafBBox.y_max];
+
+                // If Base/Tip are outside, expand. If inside, keep tight SAM bbox.
+                // Actually, strict "Bitabita" means MIN/MAX of ALL Points.
+                // The SAM points + Base + Tip.
+                // But SAM points are in `tempLeaf.supportPoints`.
+                // So we should recalculate from ALL points relative to support + main.
+
+                const allLeafPoints = [...(tempLeaf.supportPoints || []), ...newPoints];
+                if (allLeafPoints.length > 0) {
+                    const allXs = allLeafPoints.map(p => p.x);
+                    const allYs = allLeafPoints.map(p => p.y);
+                    const pad = 10;
+                    finalLeafBBox = {
+                        x_min: Math.max(0, Math.min(...allXs) - pad),
+                        y_min: Math.max(0, Math.min(...allYs) - pad),
+                        x_max: Math.max(...allXs) + pad, // Upper bound not clipped here, safe within Canvas
+                        y_max: Math.max(...allYs) + pad
+                    };
+                }
+
                 const completedLeaf: Leaf = {
                     id: tempLeaf.id!,
-                    bbox: tempLeaf.bbox!,
+                    bbox: finalLeafBBox,
                     points: newPoints,
                     supportPoints: tempLeaf.supportPoints || [],
                     maskPolygon: tempLeaf.maskPolygon,
                     color: tempLeaf.color!
                 };
 
+                // Optimistic Update
                 const newLeaves = [...leaves, completedLeaf];
                 setLeaves(newLeaves);
-                setTempLeaf({});
+                setTempLeaf({}); // Reset for next leaf
 
+                // Persist to Backend Immediately
                 const payload = newLeaves.map(l => ({
                     ...l,
-                    support_points: l.supportPoints,
-                    mask_polygon: l.maskPolygon
+                    support_points: l.supportPoints
                 }));
 
-                axios.post(`${API_BASE}/save_frame`, {
-                    frame_index: denseIdx,
+                axios.post(`${API_URL}/save_frame`, {
+                    frame_index: currentFrameIndex,
                     leaves: payload
                 })
                     .then(() => {
                         console.log("Leaf saved to backend.");
-                        return fetchAnnotations();
+                        return fetchAnnotations(); // Sync source of truth
                     })
                     .catch(err => console.error("Failed to save leaf", err));
             }
@@ -475,13 +576,13 @@ export const useAnnotation = () => {
     const [progress, setProgress] = useState<number>(0);
     const [isPolling, setIsPolling] = useState<boolean>(false);
 
-    // Polling
+    // Polling Logic
     useEffect(() => {
         let interval: any;
         if (isPolling) {
             interval = setInterval(async () => {
                 try {
-                    const res = await axios.get(`${API_BASE}/tracking_status`);
+                    const res = await axios.get(`${API_URL}/tracking_status`);
                     const { status, progress: currentProgress } = res.data;
 
                     setProgress(currentProgress);
@@ -490,10 +591,13 @@ export const useAnnotation = () => {
                         setIsPolling(false);
                         setLoading(false);
                         if (status === 'error') {
-                            alert("Tracking failed.");
+                            alert("Tracking failed (check backend logs).");
                         } else {
-                            await fetchAnnotations();
-                            setTrackingStarted(true);
+                            // Sync completed. Small delay to ensure file write.
+                            setTimeout(async () => {
+                                await fetchAnnotations();
+                                setTrackingStarted(true);
+                            }, 500);
                         }
                     }
                 } catch (e) {
@@ -512,18 +616,18 @@ export const useAnnotation = () => {
 
         setLoading(true);
         setProgress(0);
-        const denseIdx = frames[currentFrameIndex] ? frames[currentFrameIndex].frame_index : 0;
         try {
+            // Map frontend camelCase to backend snake_case
             const payloadLeaves = leaves.map(l => ({
                 ...l,
-                support_points: l.supportPoints,
-                mask_polygon: l.maskPolygon
+                support_points: l.supportPoints
             }));
 
-            await axios.post(`${API_BASE}/init_tracking`, {
-                frame_index: denseIdx,
+            await axios.post(`${API_URL}/init_tracking`, {
+                frame_index: currentFrameIndex,
                 leaves: payloadLeaves
             });
+            // Start polling
             setIsPolling(true);
         } catch (err) {
             console.error(err);
@@ -532,13 +636,18 @@ export const useAnnotation = () => {
         }
     };
 
-    const exportDataset = () => {
-        window.open(`${API_BASE}/export`, '_blank');
+    const exportYolo = () => {
+        window.open(`${API_URL}/export_yolo`, '_blank');
     };
 
     const exportCSV = () => {
-        window.open(`${API_BASE}/export_csv`, '_blank');
+        window.open(`${API_URL}/export_csv`, '_blank');
     };
+
+    const annotatedIndices = Object.entries(annotations)
+        .filter(([_, ann]: [string, any]) => ann.leaves && ann.leaves.some((l: any) => l.manual))
+        .map(([k, _]) => Number(k))
+        .sort((a, b) => a - b);
 
     return {
         frames,
@@ -548,7 +657,7 @@ export const useAnnotation = () => {
         leaves,
         tempLeaf,
         startTracking,
-        exportDataset,
+        exportYolo,
         exportCSV,
         trackingStarted,
         trackingStatus: isPolling ? 'running' : 'idle',
@@ -570,8 +679,9 @@ export const useAnnotation = () => {
         deleteLeaf,
         updateLeafPoint,
         saveLeafCorrection,
-
-        truncateFrames, // Exported
-        annotations // Exported for Timeline marks
+        regenerateSupportPoints,
+        annotatedIndices,
+        deleteFutureFrames,
+        deleteAllLeaves
     };
 };

@@ -11,7 +11,7 @@ interface TimelineProps {
     onNext: () => void;
     onPlayToggle: () => void;
     isPlaying: boolean;
-    marks?: number[];
+    annotatedIndices: number[];
 }
 
 export const Timeline: React.FC<TimelineProps> = ({
@@ -24,7 +24,7 @@ export const Timeline: React.FC<TimelineProps> = ({
     onNext,
     onPlayToggle,
     isPlaying,
-    marks
+    annotatedIndices
 }) => {
     return (
         <div className="flex items-center gap-4 p-4 bg-gray-900 text-white w-full">
@@ -41,34 +41,25 @@ export const Timeline: React.FC<TimelineProps> = ({
             </div>
 
             <div className="font-mono text-xl w-16 text-center">{timestamp}</div>
-
-            <div className="relative flex-grow mx-2 h-8 flex items-center">
-                {/* Markers */}
-                {marks && marks.map(m => (
-                    <div
-                        key={m}
-                        className="absolute text-yellow-400 text-sm pointer-events-none select-none font-bold"
-                        style={{
-                            left: `${(m / max) * 100}%`,
-                            top: '-8px',
-                            transform: 'translateX(-50%)',
-                            zIndex: 10
-                        }}
-                    >
-                        ★
-                    </div>
-                ))}
-
+            <div className="relative flex-grow h-6 flex items-center">
                 <input
                     type="range"
                     min={min}
                     max={max}
                     value={value}
                     onChange={(e) => onChange(Number(e.target.value))}
-                    className="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer relative z-20 bg-opacity-50"
+                    className="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer z-10"
                 />
+                {annotatedIndices.map(idx => (
+                    <div
+                        key={idx}
+                        className="absolute text-yellow-400 pointer-events-none"
+                        style={{ left: `${(idx / (max || 1)) * 100}%`, top: '-10px', fontSize: '10px' }}
+                    >
+                        ★
+                    </div>
+                ))}
             </div>
-
             <div className="font-mono text-sm text-gray-400 w-24 text-right">
                 Frame: {value}
             </div>

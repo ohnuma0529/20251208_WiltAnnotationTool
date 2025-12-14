@@ -2,37 +2,11 @@ import React, { useState, useEffect } from 'react';
 import { Viewer } from './components/Viewer';
 import { Controls } from './components/Controls';
 import { Timeline } from './components/Timeline';
+
 import { useAnnotation } from './hooks/useAnnotation';
 
-// Visibility Types
-export interface VisibilityState {
-    bbox: boolean;
-    keypoints: boolean;
-    supportPoints: boolean;
-    mask: boolean;
-}
-
-export interface OpacityState {
-    bbox: number;
-    keypoints: number;
-    supportPoints: number;
-    mask: number;
-}
-
 function App() {
-    const [visibility, setVisibility] = useState<VisibilityState>({
-        bbox: true,
-        keypoints: true,
-        supportPoints: true,
-        mask: false
-    });
-    const [opacity, setOpacity] = useState<OpacityState>({
-        bbox: 1.0,
-        keypoints: 1.0,
-        supportPoints: 0.3,
-        mask: 0.0
-    });
-
+    const [opacity, setOpacity] = useState<number>(0.6); // Default 60%
     const {
         frames,
         currentFrameIndex,
@@ -42,7 +16,7 @@ function App() {
         tempLeaf,
         addTempPoint,
         startTracking,
-        exportDataset,
+        exportYolo,
         exportCSV,
         trackingStarted,
         previewPoints,
@@ -63,20 +37,14 @@ function App() {
         // V6 Props
         updateLeafPoint,
         saveLeafCorrection,
-        truncateFrames,
-        annotations
+        regenerateSupportPoints,
+        annotatedIndices,
+        deleteFutureFrames,
+        deleteAllLeaves
     } = useAnnotation();
 
-    // Calculate marks for Timeline (map dense annotation to sparse frame index)
-    const manualFrameIndices = frames.map((f, i) => {
-        const ann = annotations[f.frame_index];
-        // Check if any leaf is manual
-        if (ann && ann.leaves && ann.leaves.some((l: any) => l.manual)) return i;
-        return -1;
-    }).filter(i => i !== -1);
-
     // V6 State
-    const [isAnnotationMode, setAnnotationMode] = useState<boolean>(true); // Default to True to allow drawing
+    // const [isAnnotationMode, setAnnotationMode] = useState<boolean>(true); // Removed - Always ON
 
     // Derived state
     const currentFrame = frames[currentFrameIndex];
@@ -122,11 +90,10 @@ function App() {
                                 tempLeaf={tempLeaf}
                                 onBBoxComplete={previewPoints}
                                 onPointAdd={addTempPoint}
-                                isAnnotationMode={isAnnotationMode}
+                                isAnnotationMode={true} // Always ON
                                 updateLeafPoint={updateLeafPoint}
                                 saveLeafCorrection={saveLeafCorrection}
-                                onDeleteLeaf={deleteLeaf}
-                                visibility={visibility}
+                                regenerateSupportPoints={regenerateSupportPoints}
                                 opacity={opacity}
                             />
                         ) : (
@@ -139,10 +106,8 @@ function App() {
                 <div className="w-80 border-l border-gray-700 bg-gray-800 overflow-y-auto">
                     <Controls
                         onTrack={handleTrack}
-                        onExport={exportDataset}
+                        onExportYolo={exportYolo}
                         onExportCSV={exportCSV}
-                        isAnnotationMode={isAnnotationMode}
-                        setAnnotationMode={setAnnotationMode}
                         trackingStarted={trackingStarted}
                         loading={loading}
                         dates={dates}
@@ -153,24 +118,16 @@ function App() {
                         progress={progress || 0}
                         leaves={leaves}
                         onDeleteLeaf={deleteLeaf}
+                        onDeleteAllLeaves={deleteAllLeaves}
+                        onDeleteFutureFrames={deleteFutureFrames}
                         units={units}
                         selectedUnit={selectedUnit}
                         changeUnit={changeUnit}
-                        visibility={visibility}
                         opacity={opacity}
-                        setVisibility={setVisibility}
                         setOpacity={setOpacity}
-                        truncateFrames={truncateFrames}
+                        currentFilename={currentFrame?.filename || 'No Image'}
+                        currentTime={currentFrame?.timestamp || '--:--'}
                     />
-
-                    <div className="p-4">
-                        <h3 className="font-bold mb-2">Info</h3>
-                        <div className="text-sm text-gray-300">
-                            <p>Filename: {currentFrame?.filename}</p>
-                            <p>Time: {currentFrame?.timestamp}</p>
-                            <p>Support Points: {leaves.reduce((acc, l) => acc + (l.supportPoints?.length || 0), 0)}</p>
-                        </div>
-                    </div>
                 </div>
             </div>
 
@@ -186,7 +143,7 @@ function App() {
                     onNext={nextFrame}
                     onPlayToggle={togglePlay}
                     isPlaying={isPlaying}
-                    marks={manualFrameIndices}
+                    annotatedIndices={annotatedIndices}
                 />
             </div>
         </div>

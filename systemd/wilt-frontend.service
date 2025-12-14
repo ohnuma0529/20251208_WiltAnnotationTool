@@ -1,0 +1,13 @@
+[Unit]
+Description=Wilt Annotation Tool Frontend
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/happyai2023/20251208_WiltAnnotationTool
+ExecStart=/bin/bash /home/happyai2023/20251208_WiltAnnotationTool/start_frontend.sh
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target

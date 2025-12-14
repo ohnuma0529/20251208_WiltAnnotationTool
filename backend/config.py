@@ -12,7 +12,7 @@ class Settings(BaseSettings):
     # Filter Settings
     START_TIME_HOUR: int = 7
     END_TIME_HOUR: int = 17 # Exclusive (07:00 <= t < 17:00)
-    DEFAULT_FREQUENCY: int = 10 # Minutes
+    DEFAULT_FREQUENCY: int = 30 # Minutes
     
     # CORS
     CORS_ORIGINS: list = [

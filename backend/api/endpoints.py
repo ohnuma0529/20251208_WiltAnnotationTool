@@ -6,10 +6,15 @@ import os
 import json
 import zipfile
 import io
+import csv
+from PIL import Image
 from ..core.image_loader import image_loader
 from ..core.tracking import tracking_engine
 from ..core.persistence import persistence
-from ..models.schemas import InitTrackingRequest, UpdateRegionRequest, UpdatePointRequest, TrackingResult, FrameData, SetFilterRequest, PreviewPointsRequest, DeleteLeafRequest, LeafAnnotation
+from ..models.schemas import InitTrackingRequest, UpdateRegionRequest, UpdatePointRequest, TrackingResult, FrameData, SetFilterRequest, PreviewPointsRequest, DeleteLeafRequest, LeafAnnotation, BBox
+
+class DeleteFramesRequest(BaseModel):
+    frame_index: int
 from ..config import settings
 
 router = APIRouter()
@@ -17,15 +22,34 @@ router = APIRouter()
 # Load state on startup
 tracking_results: Dict[int, TrackingResult] = persistence.load_state(image_loader.current_unit, image_loader.current_date)
 
-@router.post("/delete_leaf")
+@router.delete("/delete_leaf")
 def delete_leaf(req: DeleteLeafRequest):
     """
     Delete a specific leaf (or all) from current frame onwards.
     """
     try:
+        # Ensure latest state is loaded if empty (e.g. backend restarted)
+        if not tracking_results:
+             loaded = persistence.load_state(image_loader.current_unit, image_loader.current_date)
+             tracking_results.update(loaded)
+
+        if req.delete_global and req.delete_all:
+             # Explicit robust handling for Global Delete All
+             tracking_results.clear()
+             persistence.save_state(image_loader.current_unit, image_loader.current_date, {})
+             
+             # Reload just in case (though it should be empty)
+             # tracking_results = persistence.load_state(...) # No need, keep it empty/synced.
+             
+             return {"status": "success", "message": "All annotations deleted globally"}
+
         updated_count = 0
-        # V36: Delete from ALL frames (Global Delete)
-        frames_to_update = list(tracking_results.keys())
+        if req.delete_global:
+            # Global: All frames (Specific leaf deletion)
+            frames_to_update = list(tracking_results.keys())
+        else:
+            # Forward: From current frame onwards
+            frames_to_update = [idx for idx in tracking_results.keys() if idx >= req.frame_index]
         
         for idx in frames_to_update:
             res = tracking_results[idx]
@@ -46,153 +70,148 @@ def delete_leaf(req: DeleteLeafRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@router.post("/delete_frames")
+def delete_frames(req: DeleteFramesRequest):
+    """
+    Delete image files from frame_index onwards.
+    Destructive: deletes from source to prevent resurrection.
+    """
+    try:
+        # Delete images
+        count = image_loader.delete_images_from_index(req.frame_index)
+        
+        # Clean up tracking results for deleted frames
+        keys_to_remove = [k for k in tracking_results.keys() if k >= req.frame_index]
+        for k in keys_to_remove:
+            del tracking_results[k]
+            
+        # Save state
+        persistence.save_state(image_loader.current_unit, image_loader.current_date, tracking_results)
+        
+        return {"status": "deleted", "count": count}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @router.get("/images", response_model=List[FrameData])
-def get_images(frequency: int = 1):
+def get_images():
     images = []
     total = image_loader.get_total_frames()
-    
-    # Identify frames with manual annotations to force include
-    manual_indices = {
-        idx for idx, res in tracking_results.items()
-        if any(l.manual for l in res.leaves)
-    }
-
     for i in range(total):
         path = image_loader.get_image_path(i)
         if not path: continue
-        
-        # Filter by Display Frequency (Skip filter if frame is manually annotated)
-        if frequency > 1 and i not in manual_indices:
-            basename = os.path.basename(path)
-            try:
-                # Format ...-HHMM.jpg
-                ts = basename.replace(".jpg", "").split("-")[-1]
-                if len(ts) == 4 and ts.isdigit():
-                    minute = int(ts[2:])
-                    if minute % frequency != 0:
-                        continue
-            except:
-                pass
-        
         basename = os.path.basename(path)
         relative_path = os.path.relpath(path, settings.CACHE_DIR)
         
         # Parse timestamp from filename again or cache it
+        # Assuming format ...-HHMM.jpg
         ts = basename.replace(".jpg", "").split("-")[-1] 
         # Format TS as HH:MM
         ts_pretty = f"{ts[:2]}:{ts[2:]}"
         images.append(FrameData(filename=relative_path, frame_index=i, timestamp=ts_pretty))
     return images
 
-class TruncateRequest(BaseModel):
-    frame_index: int
-
-@router.post("/truncate_frames")
-def truncate_frames(req: TruncateRequest):
-    """
-    Delete all frames from frame_index onwards (Files + Cache + State).
-    Removes them from the current session and tracking state.
-    """
-    try:
-        total = image_loader.get_total_frames()
-        if req.frame_index >= total:
-            return {"status": "no_change", "msg": "Index out of range"}
-            
-        print(f"Truncating from index {req.frame_index} (Total: {total})...")
-        deleted_count = 0
-        
-        # 1. Update Tracking Results (Delete future keys)
-        keys_to_del = [k for k in tracking_results.keys() if k >= req.frame_index]
-        for k in keys_to_del:
-            del tracking_results[k]
-            
-        # 2. Delete Cache Files and Update Loader
-        # Helper to delete physical file
-        frames_to_remove = [] 
-        for i in range(req.frame_index, total):
-            p = image_loader.get_image_path(i)
-            if p:
-                if os.path.exists(p):
-                    try:
-                        os.remove(p)
-                    except:
-                        pass
-            frames_to_remove.append(i)
-            deleted_count += 1
-            
-        # Truncate the list in memory
-        image_loader.images = image_loader.images[:req.frame_index]
-        
-        # 3. Save State (and Metadata)
-        persistence.save_state(image_loader.current_unit, image_loader.current_date, tracking_results)
-        
-        # Save valid_count to metadata for persistence
-        persistence.save_metadata(image_loader.current_unit, image_loader.current_date, {"valid_count": req.frame_index})
-        
-        return {"status": "success", "deleted_frames": deleted_count}
-    except Exception as e:
-        print(f"Truncate failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@router.post("/init_tracking")
+# Helper function (Background Task)
 def run_tracking_background(req: InitTrackingRequest):
     try:
-        # 1. Identify Keyframes (Manual Annotations)
-        # Scan persistent state for any frame with manual leaves
-        keyframes: Dict[int, List[LeafAnnotation]] = {}
-        for idx, res in tracking_results.items():
-            if any(l.manual for l in res.leaves):
-                keyframes[idx] = res.leaves
+        # Run Tracking (Dense Mode V49)
+        # 1. Get Dense Image List (Freq 1)
+        current_unit = image_loader.current_unit
+        current_date = image_loader.current_date
         
-        # Add the current request trigger frame as keyframe (conceptually, if not already saved)
-        # But usually user calls save_frame before track. 
-        # Just in case, we trust tracking_results more? 
-        # Or if req.leaves are passed, we treat them as current manual Prompt?
-        # Yes, init_tracking prompt is definitely a keyframe source.
-        # But let's assume save_frame was called.
+        full_image_list = image_loader.get_all_files(current_unit, current_date)
         
-        print(f"DEBUG: Found {len(keyframes)} Keyframes for Global Tracking.")
+        # Build Map: Filename -> DenseIndex
+        fname_to_dense_idx = {os.path.basename(p): i for i, p in enumerate(full_image_list)}
+        
+        # Build Map: CurrentViewIndex -> Filename (For current sparse view)
+        view_idx_to_fname = {}
+        for i in range(image_loader.get_total_frames()):
+            p = image_loader.get_image_path(i)
+            if p: view_idx_to_fname[i] = os.path.basename(p)
 
-        # 2. Run Tracking (Segmented)
-        new_results = tracking_engine.execute_tracking(req.frame_index, req.leaves, keyframes)
+        # 2. Map Start Frame & Keyframes to Dense Indices
+        # Start Frame
+        start_fname = view_idx_to_fname.get(req.frame_index)
+        if not start_fname or start_fname not in fname_to_dense_idx:
+            print(f"Error: Start frame {req.frame_index} ({start_fname}) not found in dense list.")
+            return
+
+        dense_start_idx = fname_to_dense_idx[start_fname]
+        print(f"DEBUG: Dense Tracking - Start Frame Mapped: View {req.frame_index} -> Dense {dense_start_idx}")
+
+        # Keyframes
+        dense_keyframes = {}
+        for idx, res in tracking_results.items():
+            if idx != req.frame_index:
+                 manual_leaves = [l for l in res.leaves if l.manual]
+                 if manual_leaves:
+                     fname = view_idx_to_fname.get(idx)
+                     if fname and fname in fname_to_dense_idx:
+                         d_idx = fname_to_dense_idx[fname]
+                         dense_keyframes[d_idx] = manual_leaves
         
-        # 3. Merge new results (Respect Manual Keyframes)
-        # We assume new_results contains predicted interpolated frames.
-        # We must NOT overwrite manual frames.
+        print(f"DEBUG: Found {len(dense_keyframes)} existing keyframes mapped for dense tracking.")
+
+        # 3. Run Tracking on Full List
+        # Note: returns results keyed by Dense Index
+        print(f"DEBUG: Calling execute_tracking with {len(full_image_list)} images (Dense)")
+        results_dense = tracking_engine.execute_tracking(
+            dense_start_idx, 
+            req.leaves, 
+            keyframes=dense_keyframes, 
+            image_paths=full_image_list
+        )
         
-        for frame_idx, res in new_results.items():
-            # Check if this frame is manually annotated in current state
-            if frame_idx in tracking_results:
-                existing_res = tracking_results[frame_idx]
-                
-                # Extract Manual Leaves (Keep these!)
-                manual_leaves = [l for l in existing_res.leaves if l.manual]
-                manual_ids = {l.id for l in manual_leaves}
-                
-                # Filter New Results (Skip leaves that confuse with manual ones)
-                # Correction: If manual leaf exists for ID X, don't overwrite with ID X prediction.
-                # If manual leaf doesn't exist for ID Y, ADD ID Y prediction.
-                new_leaves = [l for l in res.leaves if l.id not in manual_ids]
-                
-                # Merge
-                merged_leaves = manual_leaves + new_leaves
-                tracking_results[frame_idx] = TrackingResult(leaves=merged_leaves)
-            else:
-                # No existing data, safe to overwrite
-                tracking_results[frame_idx] = res
+        # 4. Save Results (Using Filenames for Persistence)
+        # We need to construct the full Dictionary for persistence.save_state.
+        # However, persistence.save_state currently takes Dict[int, Result] and uses image_loader to map back to files.
+        # But image_loader is in SPARSE mode. It cannot map Dense Index 500 if that frame isn't loaded.
         
-        # Auto-save
-        persistence.save_state(image_loader.current_unit, image_loader.current_date, tracking_results)
-        print("Background tracking task completed and saved.")
+        # WE MUST USE A NEW PERSISTENCE METHOD OR HACK IT.
+        # Better: Convert our Dense Results (Dict[int, Result]) into Dict[str, dict] (Filename -> Dump) manually here,
+        # and save it directly or via a new persistence method.
+        # Let's modify persistence to verify this logic?
+        # Actually simplest way:
+        # Create a dict keyed by filename.
+        filename_data = {}
         
+        # Merge existing sparse tracking_results into it first (to keep non-tracked data? actually tracking overwrites)
+        # But tracking might be partial? No, dense tracking covers everything.
+        
+        for d_idx, res in results_dense.items():
+            if d_idx < len(full_image_list):
+                path = full_image_list[d_idx]
+                fname = os.path.basename(path)
+                filename_data[fname] = res.model_dump()
+        
+        # We should also preserve any manual annotations that might be on frames NOT tracked?
+        # (Though dense tracking should cover 0 to End).
+        
+        # Save directly to file
+        # We can reuse persistence logic by bypassing the "Index -> Filename" step.
+        state_file = persistence.get_state_file(current_unit, current_date)
+        with open(state_file, 'w') as f:
+            json.dump(filename_data, f, indent=2)
+        print(f"Auto-saved DENSE state to {state_file}")
+
+        # 5. Update In-Memory View (Sparse)
+        # We need to map Dense Results back to Current View Indices.
+        tracking_results.clear()
+        
+        for view_idx, fname in view_idx_to_fname.items():
+            if fname in fname_to_dense_idx:
+                d_idx = fname_to_dense_idx[fname]
+                if d_idx in results_dense:
+                    tracking_results[view_idx] = results_dense[d_idx]
+
         # Finalize Status
         tracking_engine.status = "idle"
         
     except Exception as e:
         print(f"Background tracking task failed: {e}")
-        tracking_engine.status = "error"
         import traceback
         traceback.print_exc()
+        tracking_engine.status = "error"
 
 @router.post("/init_tracking")
 def init_tracking(req: InitTrackingRequest, background_tasks: BackgroundTasks):
@@ -218,45 +237,121 @@ def get_tracking_status():
 def preview_points(req: PreviewPointsRequest):
     """
     Generate support points within BBox using SAM mask, without starting tracking.
+    Returns points, polygon, and TIGHTENED BBox.
     """
     path = image_loader.get_image_path(req.frame_index)
     if not path:
         raise HTTPException(status_code=404, detail="Frame not found")
         
     try:
-        # We reuse generate_mask_and_support_points but with empty points list (if logic allows)
-        # Or we add a specific method.
-        # Let's pass empty points list to generate_mask_and_support_points.
+        # Generate points
         _, support_points, polygon = tracking_engine.generate_mask_and_support_points(path, req.bbox, [])
-        return {"points": support_points, "polygon": polygon}
+        
+        # Calculate Tight BBox with Padding (V5: "Slightly Larger")
+        if support_points:
+            with Image.open(path) as img:
+                img_w, img_h = img.size
+
+            xs = [p['x'] for p in support_points]
+            ys = [p['y'] for p in support_points]
+
+            pad = 10
+            min_x = max(0, min(xs) - pad)
+            min_y = max(0, min(ys) - pad)
+            max_x = min(img_w, max(xs) + pad)
+            max_y = min(img_h, max(ys) + pad)
+            
+            new_bbox = BBox(x_min=float(min_x), y_min=float(min_y), x_max=float(max_x), y_max=float(max_y))
+
+        return {"points": support_points, "polygon": polygon, "new_bbox": new_bbox}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.get("/export")
-def export_dataset():
+@router.get("/export_yolo")
+def export_yolo():
     """
-    Export all annotations as a ZIP of YOLO format text files.
+    Export all annotations (DENSE) as a ZIP of YOLO format text files.
+    Format: <class> <x_center> <y_center> <width> <height> <px1> <py1> <v1> ...
+    Normalized to [0, 1].
     """
     buffer = io.BytesIO()
+    
+    # 1. Get Dense Image List
+    current_unit = image_loader.current_unit
+    current_date = image_loader.current_date
+    full_image_list = image_loader.get_all_files(current_unit, current_date)
+    
+    # 2. Load Raw State (Filename -> Result)
+    # This ensures we get annotations even if current view is sparse.
+    raw_state = persistence.load_raw_state(current_unit, current_date)
+    
+    # 3. Get Image Dimensions (Cache from first available image)
+    img_w, img_h = 0, 0
+    # Search for first existing file to get dims
+    for path in full_image_list:
+        if os.path.exists(path):
+            try:
+                with Image.open(path) as img:
+                    img_w, img_h = img.size
+                break
+            except Exception:
+                continue
+                
+    if img_w == 0 or img_h == 0:
+        raise HTTPException(status_code=500, detail="Could not determine image dimensions from any file.")
+
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
-        for frame_idx, res in tracking_results.items():
-            path = image_loader.get_image_path(frame_idx)
-            if not path: continue
-            
-            # Use original filename for txt: image.jpg -> image.txt
+        for idx, path in enumerate(full_image_list):
             fname = os.path.basename(path)
+            
+            # Check if we have annotation
+            # State keys might be "image.jpg"
+            if fname not in raw_state:
+                continue
+                
+            res_dict = raw_state[fname]
+            # Convert dict to object for typesafety or just use dict
+            leaves = res_dict.get('leaves', [])
+            if not leaves: continue
+            
             txt_name = os.path.splitext(fname)[0] + ".txt"
+            content = ""
             
-            content = f"# Frame {frame_idx}\n"
-            for leaf in res.leaves:
-                content += f"Leaf ID: {leaf.id}\n"
-                content += f"  BBox: {leaf.bbox}\n"
-                points_str = ", ".join([f"({p.id}: {p.x:.1f},{p.y:.1f})" for p in leaf.points])
-                content += f"  Points: [{points_str}]\n"
-                content += f"  SupportPoints: {len(leaf.support_points)}\n"
-                content += "-" * 20 + "\n"
+            for leaf_data in leaves:
+                # LeafAnnotation structure
+                bbox = leaf_data.get('bbox')
+                if not bbox: continue
+                
+                # YOLO BBox: x_center, y_center, width, height (Normalized)
+                bx = (bbox['x_min'] + bbox['x_max']) / 2.0
+                by = (bbox['y_min'] + bbox['y_max']) / 2.0
+                bw = bbox['x_max'] - bbox['x_min']
+                bh = bbox['y_max'] - bbox['y_min']
+                
+                nx = bx / img_w
+                ny = by / img_h
+                nw = bw / img_w
+                nh = bh / img_h
+                
+                # YOLO-Pose Keypoints
+                # Find Base (ID 0) and Tip (ID 1)
+                points = leaf_data.get('points', [])
+                p_base = next((p for p in points if p['id'] == 0), None)
+                p_tip = next((p for p in points if p['id'] == 1), None)
+                
+                def fmt_kp(p):
+                    if p:
+                        return f"{p['x'] / img_w:.6f} {p['y'] / img_h:.6f} 2"
+                    return "0.0 0.0 0"
+                
+                kps_str = f"{fmt_kp(p_base)} {fmt_kp(p_tip)}"
+                
+                # Class 0 for Leaf
+                line = f"0 {nx:.6f} {ny:.6f} {nw:.6f} {nh:.6f} {kps_str}\n"
+                content += line
             
-            zip_file.writestr(txt_name, content)
+            if content:
+                zip_file.writestr(txt_name, content)
 
     buffer.seek(0)
     return Response(
@@ -268,44 +363,90 @@ def export_dataset():
 @router.get("/export_csv")
 def export_csv():
     """
-    Export annotations as CSV for Leaf ID consistency.
-    Cols: frame_index, filename, leaf_id, bbox_xmin, bbox_ymin, bbox_xmax, bbox_ymax, keypoints...
+    Export annotations as CSV (Dense).
+    Columns: frame_index, filename, leaf_id, 
+             bbox_xmin, bbox_ymin, bbox_xmax, bbox_ymax,
+             base_x, base_y, tip_x, tip_y,
+             image_width, image_height
+    All coordinates are NORMALIZED [0, 1].
     """
     output = io.StringIO()
+    writer = csv.writer(output)
     # Header
-    # Assuming 2 Keypoints (Base, Tip). If more, flexible?
-    # User asked for "base_x, base_y, tip_x, tip_y".
-    output.write("frame_index,filename,leaf_id,bbox_xmin,bbox_ymin,bbox_xmax,bbox_ymax,base_x,base_y,tip_x,tip_y\n")
+    writer.writerow([
+        "frame_index", "filename", "leaf_id", 
+        "bbox_xmin", "bbox_ymin", "bbox_xmax", "bbox_ymax",
+        "base_x", "base_y", "tip_x", "tip_y",
+        "image_width", "image_height"
+    ])
     
-    # Sort frames
-    sorted_frames = sorted(tracking_results.keys())
+    # 1. Get Dense Image List
+    current_unit = image_loader.current_unit
+    current_date = image_loader.current_date
+    full_image_list = image_loader.get_all_files(current_unit, current_date)
     
-    for f_idx in sorted_frames:
-        res = tracking_results[f_idx]
-        path = image_loader.get_image_path(f_idx)
-        fname = os.path.basename(path) if path else f"frame_{f_idx}.jpg"
-        
-        if not res.leaves: continue
-        
-        for leaf in res.leaves:
-            # BBox
-            bx_min, by_min, bx_max, by_max = "", "", "", ""
-            if leaf.bbox:
-                bx_min, by_min, bx_max, by_max = leaf.bbox.x_min, leaf.bbox.y_min, leaf.bbox.x_max, leaf.bbox.y_max
-            
-            # Points (Base=0, Tip=1 assumption)
-            base_x, base_y, tip_x, tip_y = "", "", "", ""
-            if leaf.points:
-                # Find by ID to be sure
-                p0 = next((p for p in leaf.points if p.id == 0), None)
-                p1 = next((p for p in leaf.points if p.id == 1), None)
-                if p0: base_x, base_y = p0.x, p0.y
-                if p1: tip_x, tip_y = p1.x, p1.y
-                
-            line = f"{f_idx},{fname},{leaf.id},{bx_min},{by_min},{bx_max},{by_max},{base_x},{base_y},{tip_x},{tip_y}\n"
-            output.write(line)
+    # 2. Load Raw State
+    raw_state = persistence.load_raw_state(current_unit, current_date)
+    
+    # 3. Get Dims (Cache)
+    img_w, img_h = 0, 0
+    for path in full_image_list:
+        if os.path.exists(path):
+            try:
+                with Image.open(path) as img:
+                    img_w, img_h = img.size
+                break
+            except Exception:
+                continue
+    
+    if img_w == 0 or img_h == 0:
+         # Fallback default?
+         pass
 
-    output.seek(0)
+    # Iterate Dense List
+    for idx, path in enumerate(full_image_list):
+        fname = os.path.basename(path)
+        if fname not in raw_state: continue
+        
+        leaves = raw_state[fname].get('leaves', [])
+        
+        for leaf in leaves:
+            bbox = leaf.get('bbox')
+            if not bbox: continue
+            
+            points = leaf.get('points', [])
+            p_base = next((p for p in points if p['id'] == 0), None)
+            p_tip = next((p for p in points if p['id'] == 1), None)
+            
+            # Raw coords for calc
+            raw_xmin = bbox['x_min']
+            raw_ymin = bbox['y_min']
+            raw_xmax = bbox['x_max']
+            raw_ymax = bbox['y_max']
+            
+            raw_base_x = p_base['x'] if p_base else None
+            raw_base_y = p_base['y'] if p_base else None
+            raw_tip_x = p_tip['x'] if p_tip else None
+            raw_tip_y = p_tip['y'] if p_tip else None
+            
+            # Normalized
+            n_xmin = raw_xmin / img_w if img_w else ""
+            n_ymin = raw_ymin / img_h if img_h else ""
+            n_xmax = raw_xmax / img_w if img_w else ""
+            n_ymax = raw_ymax / img_h if img_h else ""
+            
+            n_base_x = raw_base_x / img_w if (raw_base_x is not None and img_w) else ""
+            n_base_y = raw_base_y / img_h if (raw_base_y is not None and img_h) else ""
+            n_tip_x = raw_tip_x / img_w if (raw_tip_x is not None and img_w) else ""
+            n_tip_y = raw_tip_y / img_h if (raw_tip_y is not None and img_h) else ""
+            
+            writer.writerow([
+                idx, fname, leaf['id'],
+                n_xmin, n_ymin, n_xmax, n_ymax,
+                n_base_x, n_base_y, n_tip_x, n_tip_y,
+                img_w, img_h
+            ])
+            
     return Response(
         content=output.getvalue(),
         media_type="text/csv",
@@ -317,9 +458,111 @@ def get_annotations():
     count = len(tracking_results)
     frames_with_leaves = sum(1 for res in tracking_results.values() if res.leaves)
     print(f"DEBUG: get_annotations returning {count} frames, {frames_with_leaves} with leaves.")
+    
+    count = len(tracking_results)
+    frames_with_leaves = sum(1 for res in tracking_results.values() if res.leaves)
+    print(f"DEBUG: get_annotations returning {count} frames, {frames_with_leaves} with leaves.")
     return tracking_results
 
+@router.post("/update_region")
+def update_region(req: UpdateRegionRequest):
+    """
+    Update BBox for a leaf and REGENERATE support points (Dynamic Resampling).
+    This serves as the "Face Correction" step before backward tracking.
+    """
+    if req.frame_index not in tracking_results:
+        # Implicitly creating frame if it doesn't exist?
+        # Usually update assumes existence.
+        raise HTTPException(status_code=404, detail="Frame has no annotations yet. Use save_frame or init_tracking.")
+    
+    res = tracking_results[req.frame_index]
+    target_leaf = next((l for l in res.leaves if l.id == req.leaf_id), None)
+    
+    if not target_leaf:
+        raise HTTPException(status_code=404, detail=f"Leaf {req.leaf_id} not found in frame {req.frame_index}")
+        
+    # Update BBox
+    target_leaf.bbox = req.bbox
+    target_leaf.manual = True
+    
+    # Regenerate Support Points
+    path = image_loader.get_image_path(req.frame_index)
+    if path:
+        try:
+            # We preserve Main Points? Yes.
+            # We ONLY regenerate support points.
+            _, new_support, new_poly = tracking_engine.generate_mask_and_support_points(path, req.bbox, [])
+            target_leaf.support_points = new_support
+            target_leaf.mask_polygon = new_poly
+        except Exception as e:
+            print(f"Warning: Failed to regenerate support points: {e}")
+            
+    persistence.save_state(image_loader.current_unit, image_loader.current_date, tracking_results)
+    return {"status": "updated", "leaf": target_leaf}
 
+@router.post("/update_point")
+def update_point(req: UpdatePointRequest):
+    """
+    Update a single point position (Main or Support).
+    """
+    if req.frame_index not in tracking_results:
+         raise HTTPException(status_code=404, detail="Frame not found")
+         
+    res = tracking_results[req.frame_index]
+    target_leaf = next((l for l in res.leaves if l.id == req.leaf_id), None)
+    
+    if not target_leaf:
+        raise HTTPException(status_code=404, detail="Leaf not found")
+        
+    found = False
+    # Check Main Points
+    for p in target_leaf.points:
+        if p.id == req.point_id:
+            p.x = req.x
+            p.y = req.y
+            found = True
+            break
+            
+    # Check Support Points if not found
+    if not found:
+        for p in target_leaf.support_points:
+            if p.id == req.point_id: # ID logic for support points? usually -1.
+                # If all support points have ID -1, we can't update specific one by ID.
+                # But Point struct has ID.
+                # tracking.py assigns ID -1.
+                # If we need to update specific support point, they need unique IDs.
+                # For now, let's assume this endpoint is mostly for Main Points (0, 1).
+                # Support points are usually regenerated, not dragged individually?
+                # User prompt: "Keypoint設定，Keypoint修正". Likely Main Points.
+                pass
+    
+    
+    # Recalculate BBox with Padding (V5 logic)
+    # Gather all points
+    all_points = target_leaf.points + target_leaf.support_points
+    if all_points:
+        xs = [p.x for p in all_points]
+        ys = [p.y for p in all_points]
+        
+        # Get Image Dims for Clamping
+        # We can try cache or file load. File load is safer.
+        path = image_loader.get_image_path(req.frame_index)
+        if path:
+             with Image.open(path) as img:
+                  img_w, img_h = img.size
+                  
+             pad = 10
+             min_x = max(0, min(xs) - pad)
+             min_y = max(0, min(ys) - pad)
+             max_x = min(img_w, max(xs) + pad)
+             max_y = min(img_h, max(ys) + pad)
+             
+             target_leaf.bbox = BBox(x_min=float(min_x), y_min=float(min_y), x_max=float(max_x), y_max=float(max_y))
+             
+    target_leaf.manual = True
+    persistence.save_state(image_loader.current_unit, image_loader.current_date, tracking_results)
+    
+    return {"status": "updated", "bbox": target_leaf.bbox}
 
 class SaveFrameRequest(BaseModel):
     frame_index: int
@@ -329,12 +572,13 @@ class SaveFrameRequest(BaseModel):
 def save_frame(req: SaveFrameRequest):
     """
     Save annotations for a single frame (manual annotation).
+    Forces manual=True for all leaves.
     """
     # Create or update result for this frame
     if req.frame_index not in tracking_results:
         tracking_results[req.frame_index] = TrackingResult(leaves=[])
     
-    # Force Manual Flag
+    # Enforce manual=True
     for l in req.leaves:
         l.manual = True
         
@@ -366,3 +610,4 @@ def set_filter(req: SetFilterRequest):
         "message": f"Filter set to {req.unit}/{req.date} with freq {req.frequency}m",
         "total_frames": image_loader.get_total_frames()
     }
+

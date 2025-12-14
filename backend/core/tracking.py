@@ -196,6 +196,8 @@ class TrackingEngine:
         if not predictor: 
             return {}
             
+        torch.cuda.empty_cache()
+
         # Prepare First Frame (Reference for Scale)
         first_path = frames[0]
         orig_img = cv2.imread(first_path)
@@ -234,6 +236,8 @@ class TrackingEngine:
         results: Dict[int, List[LeafAnnotation]] = {}
         
         # Determine internal chunks
+        # V46: Adjusted for RTX 3090 (24GB VRAM). 
+        # 350 was risky. Reducing to 150 for safety.
         SUB_CHUNK = 150
         
         # Logic: If we chunk, we must propagate.
@@ -266,6 +270,7 @@ class TrackingEngine:
                 video_tensor_list.append(torch.from_numpy(padded).permute(2, 0, 1))
 
             video = torch.stack(video_tensor_list).unsqueeze(0).float().to(model_loader.cotracker_device)
+            print(f"DEBUG: CoTracker Video Tensor Stats: Min={video.min().item()}, Max={video.max().item()}, Shape={video.shape}")
             
             # Inference
             # Queries must be updated if this is not the first chunk
@@ -287,10 +292,24 @@ class TrackingEngine:
                  else:
                      break
 
+            print(f"DEBUG: CoTracker Queries: Shape={queries.shape}")
+
             with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
                 pred_tracks, _ = predictor(video, queries=queries)
             
             tracks_np = pred_tracks[0].cpu().numpy()
+            
+            # Debug Movement
+            if len(tracks_np) > 1:
+                diff = np.linalg.norm(tracks_np[-1] - tracks_np[0], axis=-1)
+                avg_move = np.mean(diff)
+                print(f"DEBUG: Average Point Movement over {len(tracks_np)} frames: {avg_move:.2f} px")
+                
+                # Visualization (Debug)
+                # try:
+                #     self._visualize_tracks(video, tracks_np, filename="debug_tracking.mp4")
+                # except Exception as e:
+                #     print(f"Visualization Failed: {e}")
             
             chunk_leaves_last = []
             
@@ -341,11 +360,23 @@ class TrackingEngine:
                 
                 final_leaves = []
                 for leaf in leaf_map.values():
+                    # Outlier Filtering (Support Points)
+                    if len(leaf.support_points) > 5:
+                         leaf.support_points = self._filter_outliers(leaf.support_points)
+
                     # BBox Check
                     all_pts = leaf.points + leaf.support_points
                     if all_pts:
                         xs, ys = [p.x for p in all_pts], [p.y for p in all_pts]
-                        leaf.bbox = BBox(x_min=min(xs), y_min=min(ys), x_max=max(xs), y_max=max(ys))
+                        # Add Padding (V5: "Slightly Larger" request)
+                        pad = 10
+                        min_x = max(0, min(xs) - pad)
+                        min_y = max(0, min(ys) - pad)
+                        max_x = min(w_orig, max(xs) + pad)
+                        max_y = min(h_orig, max(ys) + pad)
+                        
+                        leaf.bbox = BBox(x_min=float(min_x), y_min=float(min_y), x_max=float(max_x), y_max=float(max_y))
+                        
                     final_leaves.append(leaf)
                 
                 results[current_global_idx] = final_leaves
@@ -359,13 +390,86 @@ class TrackingEngine:
             
         return results
 
-    def execute_tracking(self, start_frame_idx: int, initial_leaves: List[LeafAnnotation], keyframes: Dict[int, List[LeafAnnotation]] = None) -> Dict[int, TrackingResult]:
+    def _filter_outliers(self, points: List[Point]) -> List[Point]:
+        """
+        Filter out points that are > Mean + 2*StdDev from the centroid.
+        """
+        if len(points) < 4: return points
+        
+        # Centroid
+        xs = [p.x for p in points]
+        ys = [p.y for p in points]
+        cx = sum(xs) / len(xs)
+        cy = sum(ys) / len(ys)
+        
+        # Distances
+        dists = [math.sqrt((p.x - cx)**2 + (p.y - cy)**2) for p in points]
+        mean_dist = sum(dists) / len(dists)
+        variance = sum([(d - mean_dist)**2 for d in dists]) / len(dists)
+        std_dev = math.sqrt(variance)
+        
+        threshold = mean_dist + 2.0 * std_dev
+        
+        filtered = []
+        for i, p in enumerate(points):
+             if dists[i] <= threshold:
+                 filtered.append(p)
+             # else: print(f"DEBUG: Removed outlier point at dist {dists[i]:.2f} (Thresh: {threshold:.2f})")
+             
+        return filtered
+
+    def _visualize_tracks(self, video_tensor, tracks, filename="debug_tracking.mp4"):
+        """
+        Save a video with tracking visualization.
+        video_tensor: [1, T, 3, H, W] (Float 0-255? or 0-1? Check usage. It was 0-255 in _run_cotracker)
+        tracks: [T, N, 2]
+        """
+        print(f"DEBUG: Generating visualization to {filename}...")
+        
+        # Tensor to Numpy [T, H, W, 3]
+        vid = video_tensor[0].cpu().numpy().transpose(0, 2, 3, 1) # [T, H, W, 3]
+        # It is RGB, 0-255 (if padded with 0-0-0 and read by cv2)
+        # cv2.imread is 0-255.
+        
+        T, H, W, C = vid.shape
+        fps = 10
+        
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        out = cv2.VideoWriter(filename, fourcc, fps, (W, H))
+        
+        for t in range(T):
+            frame = vid[t].astype(np.uint8).copy()
+            frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR) # Back to BGR for Opencv
+            
+            pts = tracks[t] # [N, 2]
+            for val in pts:
+                 # Check visibility? CoTracker returns visibility in [T, N, 1]? 
+                 # pred_tracks is [1, T, N, 2]. Wait, does it return visibility?
+                 # pred_tracks, pred_visibility = predictor(...)
+                 # We ignored visibility.
+                 
+                 x, y = int(val[0]), int(val[1])
+                 cv2.circle(frame, (x, y), 3, (0, 0, 255), -1) # Red dot
+            
+            out.write(frame)
+            
+        out.release()
+        print(f"DEBUG: Visualization saved to {os.path.abspath(filename)}")
+
+    def execute_tracking(self, start_frame_idx: int, initial_leaves: List[LeafAnnotation], keyframes: Dict[int, List[LeafAnnotation]] = None, image_paths: List[str] = None) -> Dict[int, TrackingResult]:
         print(f"DEBUG: execute_tracking (V44 Dynamic Propagation) called from {start_frame_idx}")
+        print(f"DEBUG: execute_tracking args: image_paths len={len(image_paths) if image_paths else 'None'}")
         self.status = "running"
         self.progress = 0.0
         
         try:
-            all_frames = image_loader.images
+            # V49: Support Dense Tracking (Override logic)
+            if image_paths:
+                all_frames = image_paths
+                print(f"DEBUG: Using provided dense image list ({len(all_frames)} frames)")
+            else:
+                all_frames = image_loader.images
+            
             total_frames = len(all_frames)
             
             # 1. Prepare Keyframes
@@ -479,7 +583,9 @@ class TrackingEngine:
                 res_fwd = self._run_cotracker(frames_fwd, leaves_for_fwd, k_start, is_reversed=False)
                 
                 # Bwd: k_end -> k_start
-                frames_bwd = all_frames[k_start : k_end + 1][::-1] 
+                # Optimize: Limit backward tracking to max 60 frames
+                start_limit = max(k_start, k_end - 60)
+                frames_bwd = all_frames[start_limit : k_end + 1][::-1] 
                 res_bwd = self._run_cotracker(frames_bwd, prompts[k_end], k_end, is_reversed=True)
                 
                 # Blend
@@ -487,6 +593,9 @@ class TrackingEngine:
                     alpha = (t - k_start) / (k_end - k_start)
                     leaves_fwd = {l.id: l for l in res_fwd.get(t, [])}
                     leaves_bwd = {l.id: l for l in res_bwd.get(t, [])}
+                    
+                    if alpha > 0.8 and not leaves_bwd:
+                         print(f"WARNING: Frame {t} (Alpha={alpha:.2f}) has NO Backward Tracking results! This will cause a jump.")
                     
                     all_ids = set(leaves_fwd.keys()) | set(leaves_bwd.keys())
                     blended_leaves = []
@@ -562,7 +671,15 @@ class TrackingEngine:
                 # V44: Use Propagated Prompt!
                 tail_start_leaves = get_propagated_prompt(k_last, prompts[k_last])
                 
+                # DEBUG LOG
+                print(f"DEBUG: Tail Segment Start Leaves: {[l.id for l in tail_start_leaves]}")
+                
                 res_tail = self._run_cotracker(frames_tail, tail_start_leaves, k_last, is_reversed=False)
+                print(f"DEBUG: Tail Result Frames: {len(res_tail)}")
+                if res_tail:
+                     sample_f = list(res_tail.keys())[0]
+                     print(f"DEBUG: Sample Frame {sample_f} Leaves: {[l.id for l in res_tail[sample_f]]}")
+
                 for f, leaves in res_tail.items():
                     merge_into_global(f, leaves)
 
@@ -637,5 +754,7 @@ class TrackingEngine:
             return {}
         finally:
             self.progress = 100.0
+
+
 
 tracking_engine = TrackingEngine()

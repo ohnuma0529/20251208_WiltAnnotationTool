@@ -12,17 +12,14 @@ interface ViewerProps {
     isAnnotationMode: boolean;
     updateLeafPoint: (leafId: number, pointIndex: number, newPos: { x: number, y: number }) => void;
     saveLeafCorrection: (leafId: number) => void;
-    onDeleteLeaf: (leafId: number, deleteAll: boolean) => void;
-
-    // Visibility
-    visibility: { bbox: boolean; keypoints: boolean; supportPoints: boolean; mask: boolean; };
-    opacity: { bbox: number; keypoints: number; supportPoints: number; mask: number; };
+    regenerateSupportPoints: (leafId: number) => void;
+    opacity: number;
 }
 
 export const Viewer: React.FC<ViewerProps> = ({
     imageUrl, leaves, tempLeaf, onBBoxComplete, onPointAdd,
-    isAnnotationMode, updateLeafPoint, saveLeafCorrection, onDeleteLeaf,
-    visibility, opacity
+    isAnnotationMode, updateLeafPoint, saveLeafCorrection, regenerateSupportPoints,
+    opacity
 }) => {
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const imgRef = useRef<HTMLImageElement>(null);
@@ -34,10 +31,6 @@ export const Viewer: React.FC<ViewerProps> = ({
 
     // Dragging State
     const [draggingPoint, setDraggingPoint] = useState<{ leafId: number, pointIndex: number } | null>(null);
-    const [cursorStyle, setCursorStyle] = useState<string>('cursor-default');
-
-    // Context Menu State
-    const [contextMenu, setContextMenu] = useState<{ x: number, y: number, leafId: number } | null>(null);
 
     // Buffering Logic
     useEffect(() => {
@@ -66,28 +59,21 @@ export const Viewer: React.FC<ViewerProps> = ({
             const color = leaf.color || '#FFFF00';
 
             // Draw Mask Polygon
-            // Draw Mask Polygon
-            // V40: Remove forced visualization (User Request)
-            const showMask = visibility.mask;
-            if (showMask && leaf.maskPolygon && leaf.maskPolygon.length > 0) {
-                ctx.save();
+            if (leaf.maskPolygon && leaf.maskPolygon.length > 0) {
                 ctx.beginPath();
                 leaf.maskPolygon.forEach((p, i) => {
                     if (i === 0) ctx.moveTo(p.x, p.y);
                     else ctx.lineTo(p.x, p.y);
                 });
                 ctx.closePath();
-
-                ctx.globalAlpha = opacity.mask;
+                ctx.globalAlpha = opacity * 0.5; // Mask slightly more transparent
                 ctx.fillStyle = color;
                 ctx.fill();
-                ctx.restore();
+                ctx.globalAlpha = 1.0;
             }
 
             // Draw BBox
-            if (visibility.bbox && leaf.bbox) {
-                ctx.save();
-                ctx.globalAlpha = opacity.bbox;
+            if (leaf.bbox) {
                 ctx.strokeStyle = color;
                 ctx.lineWidth = 2;
                 ctx.strokeRect(leaf.bbox.x_min, leaf.bbox.y_min, leaf.bbox.x_max - leaf.bbox.x_min, leaf.bbox.y_max - leaf.bbox.y_min);
@@ -97,14 +83,10 @@ export const Viewer: React.FC<ViewerProps> = ({
                     ctx.font = 'bold 16px Arial';
                     ctx.fillText(`Leaf ${leaf.id ?? '?'}`, leaf.bbox.x_min, leaf.bbox.y_min - 5);
                 }
-                ctx.restore();
             }
 
             // Draw Points (Base, Tip)
-            if (visibility.keypoints && leaf.points) {
-                ctx.save();
-                ctx.globalAlpha = opacity.keypoints;
-
+            if (leaf.points) {
                 // Connection
                 if (leaf.points.length === 2) {
                     ctx.beginPath();
@@ -133,20 +115,18 @@ export const Viewer: React.FC<ViewerProps> = ({
                     ctx.font = '12px Arial';
                     ctx.fillText(p.id === 0 ? "Base" : "Tip", p.x + 10, p.y + 4);
                 });
-                ctx.restore();
             }
 
             // Draw Support Points
-            if (visibility.supportPoints && leaf.supportPoints) {
-                ctx.save();
-                ctx.globalAlpha = opacity.supportPoints;
+            if (leaf.supportPoints) {
+                ctx.globalAlpha = opacity;
                 leaf.supportPoints.forEach(p => {
                     ctx.beginPath();
                     ctx.arc(p.x, p.y, 3, 0, 2 * Math.PI);
                     ctx.fillStyle = color;
                     ctx.fill();
                 });
-                ctx.restore();
+                ctx.globalAlpha = 1.0;
             }
         };
 
@@ -154,18 +134,14 @@ export const Viewer: React.FC<ViewerProps> = ({
         leaves.forEach(l => drawLeaf(l));
 
         // Draw Temp Leaf (in progress)
-        if (currentBBox && visibility.bbox) {
-            // Only draw BBox creation if BBox visibility is ON
-            ctx.save();
-            ctx.globalAlpha = opacity.bbox;
+        if (currentBBox) {
             ctx.strokeStyle = '#FFFF00';
             ctx.strokeRect(currentBBox.x_min, currentBBox.y_min, currentBBox.x_max - currentBBox.x_min, currentBBox.y_max - currentBBox.y_min);
-            ctx.restore();
-        } else if (!currentBBox) {
+        } else {
             drawLeaf(tempLeaf, true);
         }
 
-    }, [leaves, tempLeaf, currentBBox, displayedUrl, imgDimensions, isAnnotationMode, visibility, opacity]);
+    }, [leaves, tempLeaf, currentBBox, displayedUrl, imgDimensions, isAnnotationMode, opacity]);
 
     const getMousePos = (e: React.MouseEvent) => {
         const rect = canvasRef.current!.getBoundingClientRect();
@@ -178,9 +154,6 @@ export const Viewer: React.FC<ViewerProps> = ({
     };
 
     const handleMouseDown = (e: React.MouseEvent) => {
-        // Enforce Left Click Only
-        if (e.button !== 0) return;
-
         const pos = getMousePos(e);
 
         if (isAnnotationMode) {
@@ -190,7 +163,7 @@ export const Viewer: React.FC<ViewerProps> = ({
                     for (let i = 0; i < leaf.points.length; i++) {
                         const p = leaf.points[i];
                         const dist = Math.sqrt((p.x - pos.x) ** 2 + (p.y - pos.y) ** 2);
-                        if (dist < 10) { // Hit Radius reduced to match visual circle (~8px)
+                        if (dist < 15) { // Hit Radius
                             setDraggingPoint({ leafId: leaf.id, pointIndex: i });
                             return; // Start Drag
                         }
@@ -216,15 +189,14 @@ export const Viewer: React.FC<ViewerProps> = ({
             return;
         }
 
-        // Dynamic Cursor Logic
-        if (isAnnotationMode) {
+        // Cursor Logic for Keypoints
+        if (isAnnotationMode && canvasRef.current) {
             let hovering = false;
-            // Check hover on points
             for (const leaf of leaves) {
                 if (leaf.points) {
                     for (const p of leaf.points) {
                         const dist = Math.sqrt((p.x - currentPos.x) ** 2 + (p.y - currentPos.y) ** 2);
-                        if (dist < 10) {
+                        if (dist < 10) { // Hover Radius
                             hovering = true;
                             break;
                         }
@@ -232,9 +204,7 @@ export const Viewer: React.FC<ViewerProps> = ({
                 }
                 if (hovering) break;
             }
-            setCursorStyle(hovering ? 'cursor-pointer' : 'cursor-crosshair');
-        } else {
-            setCursorStyle('cursor-default');
+            canvasRef.current.style.cursor = hovering ? 'pointer' : 'crosshair';
         }
 
         if (isDrawingBBox && startPos) {
@@ -280,51 +250,21 @@ export const Viewer: React.FC<ViewerProps> = ({
         if (!isAnnotationMode) return;
 
         const pos = getMousePos(e);
-
-        // Find if clicked on any leaf (Point or BBox)
-        let foundId = -1;
-
-        // Check Points first (higher priority)
+        // Check fit on any leaf to regenerate
         for (const leaf of leaves) {
-            if (leaf.points) {
-                for (const p of leaf.points) {
-                    const dist = Math.sqrt((p.x - pos.x) ** 2 + (p.y - pos.y) ** 2);
-                    if (dist < 15) { // Hit radius
-                        foundId = leaf.id;
-                        break;
-                    }
-                }
-            }
-            if (foundId !== -1) break;
-
-            // Check BBox
+            // Simple distance check to BBox center or points?
+            // Let's check if inside BBox
             if (leaf.bbox) {
                 if (pos.x >= leaf.bbox.x_min && pos.x <= leaf.bbox.x_max &&
                     pos.y >= leaf.bbox.y_min && pos.y <= leaf.bbox.y_max) {
-                    foundId = leaf.id;
-                    break;
+                    if (confirm(`Regenerate support points for Leaf ${leaf.id}?`)) {
+                        regenerateSupportPoints(leaf.id);
+                    }
+                    return;
                 }
             }
         }
-
-        if (foundId !== -1) {
-            // Show Menu
-            // Calculate absolute position for the menu div relative to viewport or canvas wrapper
-            // e.clientX is viewport.
-            setContextMenu({ x: e.clientX, y: e.clientY, leafId: foundId });
-        } else {
-            setContextMenu(null);
-        }
     };
-
-    // Close menu on click anywhere else
-    useEffect(() => {
-        const handleClick = () => setContextMenu(null);
-        window.addEventListener('click', handleClick);
-        return () => window.removeEventListener('click', handleClick);
-    }, []);
-
-
 
     return (
         <div className="relative border border-gray-700 bg-black inline-flex">
@@ -345,30 +285,12 @@ export const Viewer: React.FC<ViewerProps> = ({
             />
             <canvas
                 ref={canvasRef}
-                className={`absolute top-0 left-0 w-full h-full ${cursorStyle}`}
+                className={`absolute top-0 left-0 w-full h-full ${isAnnotationMode ? 'cursor-crosshair' : 'cursor-default'}`}
                 onMouseDown={handleMouseDown}
                 onMouseMove={handleMouseMove}
                 onMouseUp={handleMouseUp}
                 onContextMenu={handleContextMenu}
             />
-
-            {/* Context Menu Overlay */}
-            {contextMenu && (
-                <div
-                    className="fixed bg-white shadow-lg rounded border p-1 z-50 text-gray-800 text-sm"
-                    style={{ top: contextMenu.y, left: contextMenu.x }}
-                >
-                    <div
-                        className="p-2 hover:bg-red-100 cursor-pointer text-red-600 font-bold"
-                        onClick={() => {
-                            onDeleteLeaf(contextMenu.leafId, false);
-                            setContextMenu(null);
-                        }}
-                    >
-                        Delete Leaf {contextMenu.leafId}
-                    </div>
-                </div>
-            )}
         </div>
     );
 };
