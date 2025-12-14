@@ -377,7 +377,7 @@ def export_csv():
         "frame_index", "filename", "leaf_id", 
         "bbox_xmin", "bbox_ymin", "bbox_xmax", "bbox_ymax",
         "base_x", "base_y", "tip_x", "tip_y",
-        "image_width", "image_height"
+        "image_width", "image_height", "is_manual"
     ])
     
     # 1. Get Dense Image List
@@ -418,6 +418,9 @@ def export_csv():
             p_base = next((p for p in points if p['id'] == 0), None)
             p_tip = next((p for p in points if p['id'] == 1), None)
             
+            # Manual Flag
+            is_manual = leaf.get('manual', False)
+            
             # Raw coords for calc
             raw_xmin = bbox['x_min']
             raw_ymin = bbox['y_min']
@@ -444,13 +447,29 @@ def export_csv():
                 idx, fname, leaf['id'],
                 n_xmin, n_ymin, n_xmax, n_ymax,
                 n_base_x, n_base_y, n_tip_x, n_tip_y,
-                img_w, img_h
+                img_w, img_h, is_manual
             ])
             
+    csv_content = output.getvalue()
+    
+    # Save Locally
+    filename = f"{current_unit}_{current_date}.csv"
+    export_dir = os.path.join(settings.BASE_DIR, "backend", "exports") # Assume BASE_DIR is root
+    # Fallback if BASE_DIR not set in config use explicit path or relative
+    # Better to use relative to current working dir or just hardcode for safety in this specific env
+    export_path = os.path.join("backend", "exports", filename)
+    
+    try:
+        with open(export_path, "w") as f:
+            f.write(csv_content)
+        print(f"DEBUG: Saved CSV export to {export_path}")
+    except Exception as e:
+        print(f"ERROR: Failed to save local CSV: {e}")
+
     return Response(
-        content=output.getvalue(),
+        content=csv_content,
         media_type="text/csv",
-        headers={"Content-Disposition": "attachment; filename=annotations.csv"}
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
     )
 
 @router.get("/annotations")

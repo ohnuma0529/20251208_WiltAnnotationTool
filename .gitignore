@@ -57,3 +57,4 @@ checkpoints/
 .idea/
 .vscode/
 *.swp
+backend/exports/*.csv
