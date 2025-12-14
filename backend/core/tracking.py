@@ -48,9 +48,9 @@ class TrackingEngine:
             with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
                 predictor.set_image(img_rgb)
                 
-                print(f"DEBUG: Processing {frame_path}")
-                print(f"DEBUG: Image shape mapped for SAM: {img.shape}")
-                print(f"DEBUG: Input BBox: {bbox}")
+                # print(f"DEBUG: Processing {frame_path}")
+                # print(f"DEBUG: Image shape mapped for SAM: {img.shape}")
+                # print(f"DEBUG: Input BBox: {bbox}")
                 
                 # Prompt with BBox only (Default usage)
                 # box expects [x1, y1, x2, y2]
@@ -66,7 +66,7 @@ class TrackingEngine:
                 
                 # Default selection (Best Score)
                 best_idx = np.argmax(scores)
-                print(f"DEBUG: SAM Scores: {scores}, Best: {best_idx}")
+                # print(f"DEBUG: SAM Scores: {scores}, Best: {best_idx}")
                 
                 # mask is (3, H, W) -> Select best
                 mask = masks[best_idx].astype(np.uint8) * 255
@@ -90,7 +90,7 @@ class TrackingEngine:
                     # Debug Poly
                     xs = [p['x'] for p in polygon_list]
                     ys = [p['y'] for p in polygon_list]
-                    print(f"DEBUG: Poly Bounds: x[{min(xs):.1f}, {max(xs):.1f}], y[{min(ys):.1f}, {max(ys):.1f}]")
+                    # print(f"DEBUG: Poly Bounds: x[{min(xs):.1f}, {max(xs):.1f}], y[{min(ys):.1f}, {max(ys):.1f}]")
                 
                 # Sample Grid Points inside Mask
                 support_points_list = []

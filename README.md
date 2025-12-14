@@ -1,90 +1,96 @@
-# WiltAnnotationTool (トマト萎凋病アノテーションツール)
+# Wilt Annotation Tool (20251208 Version)
 
-SAM 2 (Segment Anything Model 2) と CoTracker を活用した、植物（トマトの葉）の萎凋病進行を高精度にアノテーション・追跡するためのツールです。
+しおれ（Wilt）葉のアノテーションを行うためのWebベースツールです。
+CoTracker3とSAM 2を使用して、キーフレーム間の自動追跡と補間を行い、高精度なアノテーションを効率的に作成できます。
 
-## 主な特徴 (Features)
+## 特徴
 
-### 1. 高度なトラッキング機能
-- **Dense Tracking**: 全フレーム（Frequency=1相当）に対して高密度なトラッキング処理をバックグラウンドで実行し、指定した頻度（Frequency=30分など）で表示します。
-- **Tight BBox ("Bitabita")**: 葉のポイント（Base/Tip）とサポートポイントを厳密に囲むバウンディングボックスを自動生成します（+10pxのパディング付き）。
-- **Outlier Filtering**: トラッキング中に発生した外れ値（誤検出されたサポートポイント）を統計的に除去し、BBoxの精度を維持します。
+*   **自動追跡 (Tracking)**: CoTracker3により、指定したキーポイント（Base, Tip）を映像全体で追跡します。
+*   **領域分割 (Segmentation)**: SAM 2 (Segment Anything Model 2) を利用して、キーポイントから葉の領域（マスク）を自動生成します。
+*   **補正・編集**: キーポイントやBBoxを修正すると、即座に追跡結果とマスクが再計算されます。
+*   **エクスポート**: YOLOフォーマットおよびCSV形式でのデータ出力に対応しています。
+*   **Systemd対応**: サーバー再起動時などに自動起動する設定を含んでいます。
 
-### 2. 直感的なUI/UX
-- **Frequency Control**: タイムラインの表示頻度を柔軟に変更可能（例: 1分, 10分, 30分間隔）。
-- **Sync BBox**: キーポイント（Base/Tip）をドラッグして修正すると、BBoxも自動的に追従して再計算されます。
-- **Global Delete**: 特定の葉を「全てのフレーム」から一括削除する機能。
-- **Optimized Performance**: 1200枚以上の画像をスムーズに扱えるキャッシュシステムとバックエンド最適化。
+## 必要要件
 
-### 3. エクスポート
-- **YOLO形式**: 学習用に正規化されたBBoxとキーポイントデータをZIPエクスポート。
-- **CSV形式**: 詳細な解析用に、全フレーム（Dense）の座標データを含むCSVをエクスポート。
+*   Linux (Ubuntu 推奨)
+*   NVIDIA GPU (CUDA対応) - 必須 (CoTracker/SAM2用)
+*   Anaconda / Miniconda
+*   Node.js (Frontend用)
 
----
+## セットアップ手順
 
-## セットアップ (Setup)
-
-### 前提条件
-- Linux (Ubuntu推奨)
-- NVIDIA GPU (VRAM 8GB以上推奨, CUDA 12.1+)
-- Anaconda / Miniconda
-
-### 環境構築
-付属のセットアップスクリプトを使用して環境を構築します。
+### 1. リポジトリのクローンと環境構築
 
 ```bash
-bash setup_env.sh
-```
-これにより、conda環境 `WiltAnnotation` が作成され、必要なライブラリやモデル（SAM 2, CoTracker）がインストールされます。
+git clone https://github.com/ohnuma0529/20251208_WiltAnnotationTool.git
+cd 20251208_WiltAnnotationTool
 
----
-
-## 実行方法 (Usage)
-
-### 1. 環境の有効化
-```bash
+# Conda環境の作成 (環境名: WiltAnnotation)
+conda env create -f environment.yml
 conda activate WiltAnnotation
 ```
 
-### 2. バックエンドの起動
+### 2. チェックポイントの準備
+
+以下のモデルファイルを `checkpoints/` ディレクトリに配置してください。
+(自動ダウンロードスクリプトが含まれていますが、手動で確認することを推奨します)
+
+*   `sam2_hiera_large.pt`
+*   `cotracker3_offline.pth` (Torch Hubキャッシュを利用する場合もあり)
+
+### 3. 自動起動設定 (Systemd)
+
+サーバー起動時や再起動時に自動的にシステムが立ち上がるように設定します。
+
 ```bash
-./start_backend.sh
+# セットアップスクリプトの実行 (sudo権限が必要です)
+bash setup_systemd.sh
 ```
-ポート **8001** でAPIサーバーが起動します。
 
-### 3. フロントエンドの起動
-別のターミナルを開き、同様に環境を有効化してから実行します。
+これにより、以下のサービスが登録・起動されます。
+*   `wilt-backend.service`: バックエンド (Port 8001)
+*   `wilt-frontend.service`: フロントエンド (Port 5173)
+
+### 手動起動 (開発用)
+
+自動起動を利用せず、手動で起動する場合は以下のスクリプトを使用してください。
+
+**バックエンド (Terminal 1)**
 ```bash
-./start_frontend.sh
+bash start_backend.sh
 ```
-ブラウザが開き、ツールが表示されます（デフォルト: `http://localhost:5173`）。
 
----
+**フロントエンド (Terminal 2)**
+```bash
+bash start_frontend.sh
+```
 
-## アノテーションの流れ (Workflow)
+## 使い方
 
-1.  **Unit/Date/Frequencyの選択**:
-    サイドバーから対象の温室ユニット(Unit)、日付(Date)を選択し、表示頻度(Frequency)を設定します。
+1.  ブラウザで `http://<サーバーIP>:5173` にアクセスします。
+2.  **Unit** (個体) と **Date** (日付) を選択します。
+3.  **Frequency** (表示間隔) を選択します (デフォルト: 30分)。
+4.  **アノテーション**:
+    *   画面上の葉に対して、根元(Base)から先端(Tip)へドラッグしてアノテーションを作成します。
+    *   自動的に追跡が開始され、全フレームにアノテーションが伝播します。
+5.  **補正**:
+    *   追跡がズレているフレームで、キーポイントをドラッグして修正します (再追跡・再補間が行われます)。
+    *   **Delete Future Images**: 選択フレーム以降の画像ソースを削除します（不可逆操作）。
+    *   **Delete Leaf**: 選択した葉のアノテーションを削除します。
+6.  **エクスポート**:
+    *   **CSV Export**: 全フレーム（Freq 1分間隔）の詳細データをCSVとしてダウンロードします。
+    *   **YOLO Export**: YOLO学習用フォーマットでデータをエクスポートします。
 
-2.  **葉のアノテーション (Create Leaf)**:
-    - 画像上の葉の **付け根 (Base)** と **先端 (Tip)** を順にクリックします。
-    - クリックすると自動的にBBoxが生成され、SAM 2によるセグメンテーション（マスク生成）とサポートポイント生成が行われます。
+## ディレクトリ構造
 
-3.  **トラッキング実行 (Track)**:
-    - 「Start Tracking」ボタンを押すと、作成した葉のポイントが全期間にわたって追跡されます。
-    - 処理はバックグラウンドで行われ、進捗バーが表示されます。
+*   `backend/`: FastAPIサーバー、追跡ロジック (CoTracker/SAM2)
+*   `frontend/`: React + Vite アプリケーション
+*   `scripts/`: ユーティリティスクリプト
+*   `systemd/`: 自動起動用サービス定義ファイル
+*   `setup_systemd.sh`: Systemd登録スクリプト
 
-4.  **修正 (Correction)**:
-    - トラッキング結果を確認し、ズレている場合はポイントをドラッグして修正します。
-    - **Sync BBox**: ポイントを動かすとBBoxも自動修正されます。
-    - 必要に応じて「Update BBox」で再計算させることも可能です。
+## 注意事項
 
-5.  **エクスポート (Export)**:
-    - 「Export YOLO」または「Export CSV」ボタンで、アノテーション結果をダウンロードします。
-
----
-
-## ディレクトリ構成
-- `backend/`: FastAPI + PyTorch (SAM2, CoTracker)
-- `frontend/`: React + Vite + TailwindCSS
-- `fast_cache/`: 画像の高速読み込み用キャッシュ（Git対象外）
-- `images/`: データセット置き場（Git対象外）
+*   **GPUメモリ**: CoTrackerとSAM2を同時に動かすため、十分なVRAM (16GB以上推奨) が必要です。
+*   **画像パス**: `backend/config.py` または `.env` (もしあれば) で画像ディレクトリのパスを確認してください。デフォルトは `/media/HDD-6TB/Leaf_Images` 等に設定されている場合があります。

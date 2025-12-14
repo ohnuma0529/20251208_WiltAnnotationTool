@@ -36,7 +36,7 @@ class PersistenceManager:
             # Convert TrackingResult objects to dicts
             # V48: Use Filenames as keys to prevent drift when freq changes
             data = {}
-            print(f"DEBUG: Saving state with {len(results)} frames. Current Freq: {image_loader.current_frequency}. Total Images: {len(image_loader.images)}")
+            # print(f"DEBUG: Saving state with {len(results)} frames. Current Freq: {image_loader.current_frequency}. Total Images: {len(image_loader.images)}")
             
             for idx, res in results.items():
                 if not res.leaves: continue 

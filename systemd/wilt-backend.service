@@ -3,11 +3,12 @@ Description=Wilt Annotation Tool Backend
 After=network.target
 
 [Service]
-Type=simple
+User=happyai2023
 WorkingDirectory=/home/happyai2023/20251208_WiltAnnotationTool
-ExecStart=/bin/bash /home/happyai2023/20251208_WiltAnnotationTool/start_backend.sh
+Environment="PYTHONPATH=/home/happyai2023/20251208_WiltAnnotationTool"
+ExecStart=/home/happyai2023/anaconda3/envs/WiltAnnotation/bin/uvicorn backend.main:app --host 0.0.0.0 --port 8001
 Restart=always
-RestartSec=10
+RestartSec=5
 
 [Install]
-WantedBy=default.target
+WantedBy=multi-user.target

@@ -1,13 +1,14 @@
 [Unit]
 Description=Wilt Annotation Tool Frontend
-After=network.target
+After=network.target wilt-backend.service
 
 [Service]
-Type=simple
-WorkingDirectory=/home/happyai2023/20251208_WiltAnnotationTool
-ExecStart=/bin/bash /home/happyai2023/20251208_WiltAnnotationTool/start_frontend.sh
+User=happyai2023
+WorkingDirectory=/home/happyai2023/20251208_WiltAnnotationTool/frontend
+Environment="PATH=/home/happyai2023/anaconda3/envs/WiltAnnotation/bin:/usr/bin:/bin"
+ExecStart=/home/happyai2023/anaconda3/envs/WiltAnnotation/bin/npm run dev -- --host
 Restart=always
-RestartSec=10
+RestartSec=5
 
 [Install]
-WantedBy=default.target
+WantedBy=multi-user.target

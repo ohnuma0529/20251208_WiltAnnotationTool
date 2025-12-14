@@ -38,24 +38,45 @@ export const Viewer: React.FC<ViewerProps> = ({
         const img = new Image();
         img.src = imageUrl;
         img.onload = () => {
-            setDisplayedUrl(imageUrl);
-            setImgDimensions(null); // Trigger resize check
+            // Only update if the loaded image is still the one we want (race check)
+            if (img.src.includes(imageUrl)) {
+                setDisplayedUrl(imageUrl);
+                setImgDimensions(null); // Trigger resize check in layout if needed
+
+                // Force redraw after image load
+                if (canvasRef.current && imgRef.current) {
+                    // Logic handled in dependency effect below, but we ensure imgRef is updated?
+                    // We don't have imgRef as an image element pointing to this new source yet if we use <img src={displayedUrl} />
+                    // So render logic relies on displayedUrl updating.
+                }
+            }
         };
     }, [imageUrl]);
 
     // Redraw
     useEffect(() => {
         const canvas = canvasRef.current;
-        const img = imgRef.current;
+        const img = imgRef.current; // This img tag in DOM uses displayedUrl
         if (!canvas || !img) return;
+
+        // Check if img fully loaded?
+        // if (!img.complete) return; // Wait for it?
 
         const ctx = canvas.getContext('2d');
         if (!ctx) return;
 
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        // Ensure we don't clear until we have marked displayedUrl as ready?
+        // Actually, displayedUrl only updates AFTER onload in previous effect.
+        // So `imgRef.current` should be pointing to the READY image.
+
+        // HOWEVER: React updates DOM <img src={displayedUrl}>. Browser might still take ms to decode even if cached?
+        // Usually instant if cached.
+
+        ctx.clearRect(0, 0, canvas.width, canvas.height); // Clear old frame
 
         // Helper to draw a leaf
         const drawLeaf = (leaf: Partial<Leaf>, isTemp: boolean = false) => {
+            // ... existing drawLeaf code ...
             const color = leaf.color || '#FFFF00';
 
             // Draw Mask Polygon

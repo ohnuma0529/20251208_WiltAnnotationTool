@@ -340,6 +340,7 @@ export const useAnnotation = () => {
                     unit: selectedUnit,
                     date: selectedDate,
                     leaf_id: leafId,
+                    frame_index: currentFrameIndex,
                     delete_global: true // Always global delete
                 }
             });
