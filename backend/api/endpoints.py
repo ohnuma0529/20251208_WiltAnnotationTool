@@ -182,10 +182,12 @@ def run_tracking_background(req: InitTrackingRequest):
             if d_idx < len(full_image_list):
                 path = full_image_list[d_idx]
                 fname = os.path.basename(path)
-                filename_data[fname] = res.model_dump()
-        
-        # We should also preserve any manual annotations that might be on frames NOT tracked?
-        # (Though dense tracking should cover 0 to End).
+                # res is List[LeafAnnotation]. We need valid dict structure for JSON.
+                # Matching Persistence schema: { "leaves": [...], "timestamp": ... }
+                # We only have leaves here.
+                filename_data[fname] = {
+                    "leaves": [l.model_dump() for l in res] 
+                }
         
         # Save directly to file
         # We can reuse persistence logic by bypassing the "Index -> Filename" step.
@@ -202,7 +204,8 @@ def run_tracking_background(req: InitTrackingRequest):
             if fname in fname_to_dense_idx:
                 d_idx = fname_to_dense_idx[fname]
                 if d_idx in results_dense:
-                    tracking_results[view_idx] = results_dense[d_idx]
+                    # Wrap List[LeafAnnotation] in TrackingResult
+                    tracking_results[view_idx] = TrackingResult(leaves=results_dense[d_idx])
 
         # Finalize Status
         tracking_engine.status = "idle"
