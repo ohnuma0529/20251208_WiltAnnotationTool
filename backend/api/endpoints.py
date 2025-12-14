@@ -556,27 +556,60 @@ def update_point(req: UpdatePointRequest):
                 pass
     
     
-    # Recalculate BBox with Padding (V5 logic)
-    # Gather all points
-    all_points = target_leaf.points + target_leaf.support_points
+    p_updated = next((p for p in all_points if p.id == req.point_id), None)
+    if p_updated:
+        # Since we modified the object in-place above via reference? 
+        # Wait, 'target_leaf.points' contains Point objects. 
+        # We iterate and modify 'p.x = req.x'. This modifies the object in the list.
+        # So 'all_points' (concatenation) might contain COPIES or REFERENCES?
+        # List + List creates a new list, but elements are references.
+        # Let's verify: target_leaf.points is list of Point (Pydantic models).
+        # Pydantic models are mutable by default? Yes.
+        pass
+
     if all_points:
         xs = [p.x for p in all_points]
         ys = [p.y for p in all_points]
         
-        # Get Image Dims for Clamping
-        # We can try cache or file load. File load is safer.
-        path = image_loader.get_image_path(req.frame_index)
-        if path:
-             with Image.open(path) as img:
-                  img_w, img_h = img.size
-                  
-             pad = 10
-             min_x = max(0, min(xs) - pad)
-             min_y = max(0, min(ys) - pad)
-             max_x = min(img_w, max(xs) + pad)
-             max_y = min(img_h, max(ys) + pad)
-             
-             target_leaf.bbox = BBox(x_min=float(min_x), y_min=float(min_y), x_max=float(max_x), y_max=float(max_y))
+        # Calculate Tight Bounds of Points
+        pts_min_x = min(xs)
+        pts_min_y = min(ys)
+        pts_max_x = max(xs)
+        pts_max_y = max(ys)
+        
+        # Check Containment in existing BBox (if manual or existing)
+        # If the user defined a tight BBox, and we move points INSIDE it, we should NOT expand/reset it to 10px padding.
+        current_bbox = target_leaf.bbox
+        is_contained = False
+        if current_bbox:
+            is_contained = (
+                current_bbox.x_min <= pts_min_x and
+                current_bbox.y_min <= pts_min_y and
+                current_bbox.x_max >= pts_max_x and
+                current_bbox.y_max >= pts_max_y
+            )
+            
+        if is_contained:
+            # Keep existing BBox
+            print(f"DEBUG: Points contained in existing BBox. Skipping resize.")
+            pass
+        else:
+            # Expand or Recalculate
+            print(f"DEBUG: Points outside BBox. Recalculating with padding.")
+            # Get Image Dims for Clamping
+            path = image_loader.get_image_path(req.frame_index)
+            img_w, img_h = 1920, 1080 # Fallback
+            if path:
+                 with Image.open(path) as img:
+                      img_w, img_h = img.size
+                      
+            pad = 10
+            min_x = max(0, pts_min_x - pad)
+            min_y = max(0, pts_min_y - pad)
+            max_x = min(img_w, pts_max_x + pad)
+            max_y = min(img_h, pts_max_y + pad)
+            
+            target_leaf.bbox = BBox(x_min=float(min_x), y_min=float(min_y), x_max=float(max_x), y_max=float(max_y))
              
     target_leaf.manual = True
     persistence.save_state(image_loader.current_unit, image_loader.current_date, tracking_results)

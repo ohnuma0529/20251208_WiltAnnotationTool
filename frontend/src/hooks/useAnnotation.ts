@@ -423,13 +423,38 @@ export const useAnnotation = () => {
             const allPoints = [...(l.supportPoints || []), ...newPoints];
             const allXs = allPoints.map(p => p.x);
             const allYs = allPoints.map(p => p.y);
-            const pad = 10;
-            const newBBox = {
-                x_min: Math.max(0, Math.min(...allXs) - pad),
-                y_min: Math.max(0, Math.min(...allYs) - pad),
-                x_max: Math.max(...allXs) + pad,
-                y_max: Math.max(...allYs) + pad
-            };
+
+            const minPtX = Math.min(...allXs);
+            const minPtY = Math.min(...allYs);
+            const maxPtX = Math.max(...allXs);
+            const maxPtY = Math.max(...allYs);
+
+            let newBBox = l.bbox;
+            let needsResize = true;
+
+            // Containment Check
+            if (l.bbox) {
+                const isContained = (
+                    l.bbox.x_min <= minPtX &&
+                    l.bbox.y_min <= minPtY &&
+                    l.bbox.x_max >= maxPtX &&
+                    l.bbox.y_max >= maxPtY
+                );
+                if (isContained) {
+                    needsResize = false;
+                    // Keep existing BBox
+                }
+            }
+
+            if (needsResize) {
+                const pad = 10;
+                newBBox = {
+                    x_min: Math.max(0, minPtX - pad),
+                    y_min: Math.max(0, minPtY - pad),
+                    x_max: maxPtX + pad,
+                    y_max: maxPtY + pad
+                };
+            }
 
             return {
                 ...l,
