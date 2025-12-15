@@ -54,26 +54,42 @@ def delete_leaf(req: DeleteLeafRequest):
         # If target_unit != image_loader.current_unit, we might not know total frames or be able to delete locally correctly?
         # But persistence handles just the JSON.
         # "total_frames" is only used for iteration range? No, it's NOT used in logic below except for `get_images` loop that isn't here.
-        # Wait, tracking_results keys are frame indices. We iterate tracking_results keys.
+        # Helper to sync with global state if we are modifying the active unit
+        is_active_unit = (target_unit == image_loader.current_unit and target_date == image_loader.current_date)
         
+        # Load state
+        # If active, we could use global tracking_results, but for safety/consistency we load fresh or use what we have?
+        # If we use global, we modify in place.
+        # But my previous code 'tracking_results = ...' created a local variable.
+        # Let's verify if we need to load from disk or if global is enough.
+        # To be safe against external changes (e.g. invalid state), let's load from disk to be sure, then sync back to global.
+        
+        loaded_results = persistence.load_state(target_unit, target_date)
+        
+        # Determine range
+        total_frames = image_loader.get_total_frames() 
+
         if req.delete_global and req.delete_all:
              # Explicit robust handling for Global Delete All
-             tracking_results.clear()
+             loaded_results.clear()
              persistence.save_state(target_unit, target_date, {})
+             
+             if is_active_unit:
+                 tracking_results.clear()
+                 # tracking_results is global dict. Modifying in place works if we don't reassign the name.
              
              return {"status": "success", "message": "All annotations deleted globally"}
 
         updated_count = 0
         if req.delete_global:
             # Delete from ALL frames (0 to End)
-            # This is "Delete from DB" effectively for this leaf.
-            frames_to_update = list(tracking_results.keys())
+            frames_to_update = list(loaded_results.keys())
         else:
             # Forward: From current frame onwards
-            frames_to_update = [idx for idx in tracking_results.keys() if idx >= req.frame_index]
+            frames_to_update = [idx for idx in loaded_results.keys() if idx >= req.frame_index]
         
         for idx in frames_to_update:
-            res = tracking_results[idx]
+            res = loaded_results[idx]
             original_len = len(res.leaves)
             
             if req.delete_all:
@@ -85,7 +101,11 @@ def delete_leaf(req: DeleteLeafRequest):
                 updated_count += 1
                 
         if updated_count > 0:
-            persistence.save_state(target_unit, target_date, tracking_results)
+            persistence.save_state(target_unit, target_date, loaded_results)
+            if is_active_unit:
+                # Sync back to global in-place
+                tracking_results.clear()
+                tracking_results.update(loaded_results)
             
         return {"status": "success", "updated_frames": updated_count}
     except Exception as e:
