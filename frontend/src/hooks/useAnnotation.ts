@@ -344,11 +344,22 @@ export const useAnnotation = () => {
                     delete_global: true // Always global delete
                 }
             });
-            // Update local state by removing just that leaf to be responsive
+
+            // Optimistic Update: Immediately remove from view
+            setLeaves(prev => prev.filter(l => l.id !== leafId));
+
+            // Update local annotations cache for current frame to prevent flicker
             setAnnotations(prev => {
-                // Deep copy isn't easy for Record, but we can just invalidate.
-                return { ...prev };
+                const next = { ...prev };
+                if (next[currentFrameIndex] && next[currentFrameIndex].leaves) {
+                    next[currentFrameIndex] = {
+                        ...next[currentFrameIndex],
+                        leaves: next[currentFrameIndex].leaves.filter((l: any) => l.id !== leafId)
+                    };
+                }
+                return next;
             });
+
             await fetchAnnotations();
         } catch (error) {
             console.error('Error deleting leaf:', error);
