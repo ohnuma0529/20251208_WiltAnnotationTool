@@ -2,7 +2,7 @@ import torch
 import numpy as np
 import cv2
 import os
-from typing import List, Tuple, Dict
+from typing import List, Tuple, Dict, Callable
 from ..models.schemas import Point, BBox, TrackingResult, LeafAnnotation
 from .model_loader import model_loader
 import math
