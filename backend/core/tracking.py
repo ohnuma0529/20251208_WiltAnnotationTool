@@ -618,29 +618,11 @@ class TrackingEngine:
                                 elif pf: final_points.append(pf)
                                 elif pb: final_points.append(pb)
                                     
-                            # Support Points
-                            count_f = len(lf.support_points)
-                            count_b = len(lb.support_points)
-                            is_mismatch = abs(count_f - count_b) > max(count_f, count_b) * 0.2
-                            
-                            if is_mismatch:
-                                final_support = lf.support_points if alpha < 0.5 else lb.support_points
-                                final_mask = lf.mask_polygon if alpha < 0.5 else lb.mask_polygon
-                            else:
-                                max_idx = max(count_f, count_b)
-                                final_support = []
-                                for idx in range(max_idx):
-                                    sp_f = lf.support_points[idx] if idx < count_f else None
-                                    sp_b = lb.support_points[idx] if idx < count_b else None
-                                    if sp_f and sp_b:
-                                        nx = sp_f.x * (1 - alpha) + sp_b.x * alpha
-                                        ny = sp_f.y * (1 - alpha) + sp_b.y * alpha
-                                        final_support.append(Point(x=nx, y=ny, id=-1))
-                                    elif sp_f:
-                                        if alpha < 0.5: final_support.append(sp_f)
-                                    elif sp_b:
-                                        if alpha >= 0.5: final_support.append(sp_b)
-                                final_mask = lf.mask_polygon if alpha < 0.5 else lb.mask_polygon # Fallback mask blend logic?
+                            # Support Points (V53: Switch Strategy to prevent jitter)
+                            # Do not interpolate support points as they lack semantic correspondence.
+                            # Just switch based on alpha to keep structure rigid.
+                            final_support = lf.support_points if alpha < 0.5 else lb.support_points
+                            final_mask = lf.mask_polygon if alpha < 0.5 else lb.mask_polygon
 
                             all_p = final_points + final_support
                             bbox = None
