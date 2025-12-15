@@ -102,10 +102,11 @@ def delete_leaf(req: DeleteLeafRequest):
                 
         if updated_count > 0:
             persistence.save_state(target_unit, target_date, loaded_results)
-            if is_active_unit:
-                # Sync back to global in-place
-                tracking_results.clear()
-                tracking_results.update(loaded_results)
+            
+        # ALWAYS Sync global memory if active, to cure zombies (in-memory state that doesn't exist on disk)
+        if is_active_unit:
+            tracking_results.clear()
+            tracking_results.update(loaded_results)
             
         return {"status": "success", "updated_frames": updated_count}
     except Exception as e:
