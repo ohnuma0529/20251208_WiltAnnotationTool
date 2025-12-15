@@ -46,7 +46,8 @@ def delete_leaf(req: DeleteLeafRequest):
         target_date = req.date if req.date else image_loader.current_date
         
         # Ensure latest state is loaded
-        tracking_results = persistence.load_state(target_unit, target_date)
+        # tracking_results = persistence.load_state(target_unit, target_date) # REMOVED to avoid shadowing global
+
         
         # Determine range
         total_frames = image_loader.get_total_frames() # Still relies on cache index if unit matches? 
