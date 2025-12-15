@@ -8,6 +8,7 @@ import zipfile
 import io
 import csv
 from PIL import Image
+import shutil
 from ..core.image_loader import image_loader
 from ..core.tracking import tracking_engine
 from ..core.persistence import persistence
@@ -22,26 +23,43 @@ router = APIRouter()
 # Load state on startup
 tracking_results: Dict[int, TrackingResult] = persistence.load_state(image_loader.current_unit, image_loader.current_date)
 
+def backup_state(unit: str, date: str):
+    """Back up existing annotation_state.json before tracking."""
+    if not unit or not date: return
+    
+    state_file = os.path.join(settings.WORK_DIR, unit, date, "annotation_state.json")
+    if os.path.exists(state_file):
+        try:
+            shutil.copy2(state_file, state_file + ".bak")
+            print(f"Backed up state to {state_file}.bak")
+        except Exception as e:
+            print(f"Backup failed: {e}")
+
 @router.delete("/delete_leaf")
 def delete_leaf(req: DeleteLeafRequest):
     """
     Delete a specific leaf (or all) from current frame onwards.
     """
     try:
-        # Ensure latest state is loaded if empty (e.g. backend restarted)
-        # Load latest state to ensure sync
-        tracking_results = persistence.load_state(image_loader.current_unit, image_loader.current_date)
+        # Prioritize request unit/date, fallback to image_loader state
+        target_unit = req.unit if req.unit else image_loader.current_unit
+        target_date = req.date if req.date else image_loader.current_date
+        
+        # Ensure latest state is loaded
+        tracking_results = persistence.load_state(target_unit, target_date)
         
         # Determine range
-        total_frames = image_loader.get_total_frames()
+        total_frames = image_loader.get_total_frames() # Still relies on cache index if unit matches? 
+        # Actually total_frames is just len(image_loader.images). 
+        # If target_unit != image_loader.current_unit, we might not know total frames or be able to delete locally correctly?
+        # But persistence handles just the JSON.
+        # "total_frames" is only used for iteration range? No, it's NOT used in logic below except for `get_images` loop that isn't here.
+        # Wait, tracking_results keys are frame indices. We iterate tracking_results keys.
         
         if req.delete_global and req.delete_all:
              # Explicit robust handling for Global Delete All
              tracking_results.clear()
-             persistence.save_state(image_loader.current_unit, image_loader.current_date, {})
-             
-             # Reload just in case (though it should be empty)
-             # tracking_results = persistence.load_state(...) # No need, keep it empty/synced.
+             persistence.save_state(target_unit, target_date, {})
              
              return {"status": "success", "message": "All annotations deleted globally"}
 
@@ -67,7 +85,7 @@ def delete_leaf(req: DeleteLeafRequest):
                 updated_count += 1
                 
         if updated_count > 0:
-            persistence.save_state(image_loader.current_unit, image_loader.current_date, tracking_results)
+            persistence.save_state(target_unit, target_date, tracking_results)
             
         return {"status": "success", "updated_frames": updated_count}
     except Exception as e:

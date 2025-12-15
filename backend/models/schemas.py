@@ -33,6 +33,8 @@ class DeleteLeafRequest(BaseModel):
     leaf_id: Optional[int] = None
     delete_all: bool = False
     delete_global: bool = False
+    unit: Optional[str] = None
+    date: Optional[str] = None
 
 class PreviewPointsRequest(BaseModel):
     frame_index: int
